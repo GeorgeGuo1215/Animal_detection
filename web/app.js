@@ -876,19 +876,7 @@ class RadarWebApp {
         this.bleCharts.iq = new Chart(document.getElementById('bleIQChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I/Q 实时信号' } },
-                scales: {
-                    x: { display: true, title: { display: true } },
-                    y: { 
-                        display: true, 
-                        title: { display: true },
-                        min: -2,  // 固定 I/Q 信号范围
-                        max: 2
-                    }
-                }
-            }
+            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I/Q 实时信号' } } }
         });
 
         this.bleCharts.constellation = new Chart(document.getElementById('bleConstellationChart'), {
@@ -898,16 +886,8 @@ class RadarWebApp {
                 ...chartOptions, 
                 plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I/Q 星座图' } },
                 scales: {
-                    x: { 
-                        title: { display: true, text: 'I通道' },
-                        min: -2,  // 固定星座图范围
-                        max: 2
-                    },
-                    y: { 
-                        title: { display: true, text: 'Q通道' },
-                        min: -2,
-                        max: 2
-                    }
+                    x: { title: { display: true, text: 'I通道' } },
+                    y: { title: { display: true, text: 'Q通道' } }
                 }
             }
         });
@@ -915,37 +895,13 @@ class RadarWebApp {
         this.bleCharts.respiratory = new Chart(document.getElementById('bleRespiratoryChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙呼吸波形' } },
-                scales: {
-                    x: { display: true, title: { display: true } },
-                    y: { 
-                        display: true, 
-                        title: { display: true },
-                        min: -1.5,  // 固定呼吸波形范围
-                        max: 1.5
-                    }
-                }
-            }
+            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙呼吸波形' } } }
         });
 
         this.bleCharts.heartbeat = new Chart(document.getElementById('bleHeartbeatChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙心跳波形' } },
-                scales: {
-                    x: { display: true, title: { display: true } },
-                    y: { 
-                        display: true, 
-                        title: { display: true },
-                        min: -1.5,  // 固定心跳波形范围
-                        max: 1.5
-                    }
-                }
-            }
+            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙心跳波形' } } }
         });
 
         // 初始化 IMU(Gx/Gy/Gz) 图表
@@ -954,19 +910,7 @@ class RadarWebApp {
             this.bleCharts.imu = new Chart(imuCanvas, {
                 type: 'line',
                 data: { labels: [], datasets: [] },
-                options: { 
-                    ...chartOptions, 
-                    plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 Gx/Gy/Gz 三轴变化' } },
-                    scales: {
-                        x: { display: true, title: { display: true } },
-                        y: { 
-                            display: true, 
-                            title: { display: true },
-                            min: -500,  // 固定陀螺仪范围
-                            max: 500
-                        }
-                    }
-                }
+                options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 Gx/Gy/Gz 三轴变化' } } }
             });
         }
 
@@ -1071,19 +1015,7 @@ class RadarWebApp {
         this.charts.iq = new Chart(document.getElementById('iqChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '原始I/Q信号' } },
-                scales: {
-                    x: { display: true, title: { display: true } },
-                    y: { 
-                        display: true, 
-                        title: { display: true },
-                        min: -2,  // 固定 I/Q 信号范围
-                        max: 2
-                    }
-                }
-            }
+            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '原始I/Q信号' } } }
         });
 
         this.charts.constellation = new Chart(document.getElementById('constellationChart'), {
@@ -1093,16 +1025,8 @@ class RadarWebApp {
                 ...chartOptions, 
                 plugins: { ...chartOptions.plugins, title: { display: true, text: 'I/Q星座图' } },
                 scales: {
-                    x: { 
-                        title: { display: true, text: 'I通道' },
-                        min: -2,  // 固定星座图范围
-                        max: 2
-                    },
-                    y: { 
-                        title: { display: true, text: 'Q通道' },
-                        min: -2,
-                        max: 2
-                    }
+                    x: { title: { display: true, text: 'I通道' } },
+                    y: { title: { display: true, text: 'Q通道' } }
                 }
             }
         });
@@ -1110,37 +1034,13 @@ class RadarWebApp {
         this.charts.respiratory = new Chart(document.getElementById('respiratoryChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '呼吸波形' } },
-                scales: {
-                    x: { display: true, title: { display: true } },
-                    y: { 
-                        display: true, 
-                        title: { display: true },
-                        min: -1.5,  // 固定呼吸波形范围
-                        max: 1.5
-                    }
-                }
-            }
+            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '呼吸波形' } } }
         });
 
         this.charts.heartbeat = new Chart(document.getElementById('heartbeatChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '心跳波形' } },
-                scales: {
-                    x: { display: true, title: { display: true } },
-                    y: { 
-                        display: true, 
-                        title: { display: true },
-                        min: -1.5,  // 固定心跳波形范围
-                        max: 1.5
-                    }
-                }
-            }
+            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '心跳波形' } } }
         });
 
         this.charts.heartRate = new Chart(document.getElementById('heartRateChart'), {
@@ -1151,11 +1051,7 @@ class RadarWebApp {
                 plugins: { ...chartOptions.plugins, title: { display: true, text: '心率分布' } },
                 scales: {
                     x: { title: { display: true, text: '文件' } },
-                    y: { 
-                        title: { display: true, text: '心率 (bpm)' },
-                        min: 30,   // 固定心率范围
-                        max: 200
-                    }
+                    y: { title: { display: true, text: '心率 (bpm)' } }
                 }
             }
         });
@@ -1168,11 +1064,7 @@ class RadarWebApp {
                 plugins: { ...chartOptions.plugins, title: { display: true, text: '呼吸频率分布' } },
                 scales: {
                     x: { title: { display: true, text: '文件' } },
-                    y: { 
-                        title: { display: true, text: '呼吸频率 (bpm)' },
-                        min: 0,    // 固定呼吸频率范围
-                        max: 60
-                    }
+                    y: { title: { display: true, text: '呼吸频率 (bpm)' } }
                 }
             }
         });
@@ -1186,11 +1078,7 @@ class RadarWebApp {
                 plugins: { ...chartOptions.plugins, title: { display: true, text: '心率随时间变化' } },
                 scales: {
                     x: { title: { display: true, text: '文件序号' } },
-                    y: { 
-                        title: { display: true, text: '心率 (bpm)' },
-                        min: 30,   // 固定心率范围
-                        max: 200
-                    }
+                    y: { title: { display: true, text: '心率 (bpm)' } }
                 }
             }
         });
@@ -1204,11 +1092,7 @@ class RadarWebApp {
                 plugins: { ...chartOptions.plugins, title: { display: true, text: '呼吸频率随时间变化' } },
                 scales: {
                     x: { title: { display: true, text: '文件序号' } },
-                    y: { 
-                        title: { display: true, text: '呼吸频率 (bpm)' },
-                        min: 0,    // 固定呼吸频率范围
-                        max: 60
-                    }
+                    y: { title: { display: true, text: '呼吸频率 (bpm)' } }
                 }
             }
         });

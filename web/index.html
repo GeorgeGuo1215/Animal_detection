@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 防止浏览器缓存旧版 index.html（否则会出现“明明改了代码但页面仍显示旧版/缺少IMU单元”的情况） -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>毫米波雷达数据处理系统 - Web版</title>
+    <link rel="stylesheet" href="style.css?v=20260113-1">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="fft.js?v=20260113-1"></script>
+    <script src="bluetooth.js?v=20260113-1"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎯 毫米波雷达数据处理系统</h1>
+            <p class="subtitle">基于Web的生理信号分析工具</p>
+        </header>
+
+        <div class="main-content">
+            <!-- 蓝牙实时数据区域 -->
+            <section class="upload-section" style="margin-bottom:20px;">
+                <h2>📶 蓝牙实时数据接口</h2>
+                <div class="file-actions" style="margin-top:10px;">
+                    <button class="btn btn-primary" id="bleConnectBtn" onclick="bleConnect()">连接蓝牙</button>
+                    <button class="btn btn-secondary" id="bleDisconnectBtn" onclick="bleDisconnect()" style="display:none;">断开</button>
+                    <button class="btn btn-success" id="bleStartRecordBtn" onclick="bleStartRecording()" style="display:none;">开始记录</button>
+                    <button class="btn btn-danger" id="bleStopRecordBtn" onclick="bleStopRecording()" style="display:none;">结束记录</button>
+                    <button class="btn btn-info" id="bleShowChartsBtn" onclick="showBluetoothCharts()" style="display:none;">显示蓝牙图表</button>
+                    <button class="btn btn-secondary" id="bleDiagBtn" onclick="bleQuickDiagnose()" style="display:none;">连接诊断(复制)</button>
+                    <button class="btn btn-primary" id="bleAzureBtn" onclick="bleAzureDiagnose()" style="display:none; margin-left:10px;">AI诊断(本次录制)</button>
+                    <button class="btn btn-warning" onclick="startSimulationTest()" style="margin-left:10px;">模拟测试</button>
+                </div>
+                
+                <!-- 连接状态和实时数据显示 -->
+                <div class="ble-status" style="margin-top:15px;">
+                    <div class="status-log" id="bleLog" style="max-height:100px; margin-bottom:10px;"></div>
+                    
+                    <!-- 实时数据监控 -->
+                    <div id="bleRealTimeData" style="display:none;">
+                        <h4>📡 实时数据流:</h4>
+                        <div class="realtime-stats" style="display:flex; gap:20px; margin:10px 0;">
+                            <div class="stat-item">
+                                <span class="stat-label">接收数据点:</span>
+                                <span class="stat-value" id="bleDataCount">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">实际接收频率:</span>
+                                <span class="stat-value" id="bleActualFs">-- Hz</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">丢包率(估算):</span>
+                                <span class="stat-value" id="blePacketLoss">-- %</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">间隔抖动:</span>
+                                <span class="stat-value" id="bleJitter">-- ms</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">当前心率:</span>
+                                <span class="stat-value" id="bleCurrentHR">-- bpm</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">当前呼吸:</span>
+                                <span class="stat-value" id="bleCurrentResp">-- bpm</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">当前温度:</span>
+                                <span class="stat-value" id="bleCurrentTemp">-- °C</span>
+                            </div>
+                        </div>
+                        <div class="raw-data-log" id="bleRawDataLog" style="background:#f8f9fa; padding:10px; border-radius:5px; max-height:150px; overflow-y:auto; font-family:monospace; font-size:0.8rem;">
+                            <strong>原始数据:</strong><br/>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 文件上传区域 -->
+            <section class="upload-section">
+                <h2>📁 数据文件上传</h2>
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <div class="upload-icon">📤</div>
+                        <p>拖拽文件到此处或点击选择文件</p>
+                        <p class="upload-hint">支持 .txt 格式的雷达数据文件</p>
+                        <input type="file" id="fileInput" accept=".txt" multiple>
+                        <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
+                            选择文件
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- 文件列表 -->
+                <div class="file-list" id="fileList" style="display: none;">
+                    <h3>已选择的文件:</h3>
+                    <ul id="fileItems"></ul>
+                    <div class="file-actions">
+                        <button class="btn btn-primary" onclick="processFiles()">开始处理</button>
+                        <button class="btn btn-secondary" onclick="clearFiles()">清空文件</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 处理状态 -->
+            <section class="status-section" id="statusSection" style="display: none;">
+                <h2>⚙️ 处理状态</h2>
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">准备中...</div>
+                </div>
+                <div class="status-log" id="statusLog"></div>
+            </section>
+
+            <!-- 处理结果 -->
+            <section class="results-section" id="resultsSection" style="display: none;">
+                <h2>📊 处理结果</h2>
+                
+                <!-- 结果统计 -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">💓</div>
+                        <div class="stat-content">
+                            <div class="stat-label">平均心率</div>
+                            <div class="stat-value" id="avgHeartRate">-- bpm</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🫁</div>
+                        <div class="stat-content">
+                            <div class="stat-label">平均呼吸频率</div>
+                            <div class="stat-value" id="avgRespRate">-- bpm</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📁</div>
+                        <div class="stat-content">
+                            <div class="stat-label">处理文件数</div>
+                            <div class="stat-value" id="processedFiles">0</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📈</div>
+                        <div class="stat-content">
+                            <div class="stat-label">总数据点</div>
+                            <div class="stat-value" id="totalDataPoints">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 图表区域 -->
+                <div class="charts-container">
+                    <div class="chart-row">
+                        <div class="chart-container">
+                            <h3>原始I/Q信号</h3>
+                            <canvas id="iqChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3>I/Q星座图</h3>
+                            <canvas id="constellationChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="chart-row">
+                        <div class="chart-container">
+                            <h3>呼吸波形</h3>
+                            <canvas id="respiratoryChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3>心跳波形</h3>
+                            <canvas id="heartbeatChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <!-- 动态心电图展示区域 -->
+                    <div class="ecg-section">
+                        <h3>🫀 动态生理信号监测</h3>
+                        <div class="ecg-controls">
+                            <button class="btn btn-success" id="playBtn" onclick="toggleECGPlayback()">▶️ 播放</button>
+                            <button class="btn btn-secondary" id="pauseBtn" onclick="toggleECGPlayback()" style="display: none;">⏸️ 暂停</button>
+                            <button class="btn btn-info" onclick="resetECG()">🔄 重置</button>
+                            <button class="btn btn-warning" onclick="testECG()" style="background: #ffc107; color: #000;">🧪 测试</button>
+                            <div class="speed-control">
+                                <label>播放速度:</label>
+                                <select id="speedSelect" onchange="changeECGSpeed()">
+                                    <option value="0.5">0.5x</option>
+                                    <option value="1" selected>1x</option>
+                                    <option value="2">2x</option>
+                                    <option value="4">4x</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="ecg-monitors">
+                            <!-- 呼吸波形动态监测 -->
+                            <div class="ecg-monitor respiratory-monitor">
+                                <div class="monitor-header">
+                                    <h4>🫁 呼吸波形</h4>
+                                    <div class="vital-display">
+                                        <span class="vital-label">呼吸频率:</span>
+                                        <span class="vital-value" id="currentRespRate">-- bpm</span>
+                                    </div>
+                                </div>
+                                <div class="ecg-screen" id="respiratoryECG">
+                                    <canvas id="respiratoryECGCanvas"></canvas>
+                                    <div class="ecg-grid"></div>
+                                    <div class="ecg-cursor"></div>
+                                </div>
+                            </div>
+                            
+                            <!-- 心跳波形动态监测 -->
+                            <div class="ecg-monitor heartbeat-monitor">
+                                <div class="monitor-header">
+                                    <h4>💓 心跳波形</h4>
+                                    <div class="vital-display">
+                                        <span class="vital-label">心率:</span>
+                                        <span class="vital-value" id="currentHeartRate">-- bpm</span>
+                                    </div>
+                                </div>
+                                <div class="ecg-screen" id="heartbeatECG">
+                                    <canvas id="heartbeatECGCanvas"></canvas>
+                                    <div class="ecg-grid"></div>
+                                    <div class="ecg-cursor"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="chart-row">
+                        <div class="chart-container">
+                            <h3>心率时间序列</h3>
+                            <canvas id="heartRateTimeChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3>呼吸频率时间序列</h3>
+                            <canvas id="respRateTimeChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="chart-row">
+                        <div class="chart-container">
+                            <h3>心率分布</h3>
+                            <canvas id="heartRateChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3>呼吸频率分布</h3>
+                            <canvas id="respRateChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI诊断报告区域 -->
+                <div class="ai-diagnosis-section">
+                    <h3>🤖 AI智能诊断报告</h3>
+                    <div class="ai-controls">
+                        <button class="btn btn-primary" onclick="showAIConfig()">⚙️ 配置Azure OpenAI</button>
+                        <button class="btn btn-success" onclick="generateDiagnosticReport()" id="generateReportBtn" disabled>🩺 生成诊断报告</button>
+                        <button class="btn btn-info" onclick="showPromptEditor()">📝 自定义Prompt</button>
+                        <button class="btn btn-warning" onclick="showRAGEditor()">📚 管理知识库</button>
+                    </div>
+                    
+                    <div class="ai-report-container" id="aiReportContainer" style="display: none;">
+                        <div class="report-header">
+                            <h4>诊断报告</h4>
+                            <div class="report-meta">
+                                <span id="reportTimestamp"></span>
+                                <button class="btn btn-sm" onclick="exportReport()">📄 导出报告</button>
+                            </div>
+                        </div>
+                        <div class="report-content" id="reportContent"></div>
+                    </div>
+                </div>
+
+                <!-- 详细结果表格 -->
+                <div class="table-container">
+                    <h3>详细处理结果</h3>
+                    <div class="table-actions">
+                        <button class="btn btn-success" onclick="exportResults()">导出CSV</button>
+                        <button class="btn btn-info" onclick="exportCharts()">导出图表</button>
+                    </div>
+                    <table id="resultsTable">
+                        <thead>
+                            <tr>
+                                <th>文件名</th>
+                                <th>数据点数</th>
+                                <th>心率 (bpm)</th>
+                                <th>呼吸频率 (bpm)</th>
+                                <th>圆心I</th>
+                                <th>圆心Q</th>
+                                <th>圆半径</th>
+                                <th>处理状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- 蓝牙实时图表区域 -->
+            <section class="results-section" id="bluetoothChartsSection" style="display: none;">
+                <h2>📊 蓝牙实时数据图表</h2>
+                
+                <!-- 蓝牙数据统计 -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">💓</div>
+                        <div class="stat-content">
+                            <div class="stat-label">实时心率</div>
+                            <div class="stat-value" id="bleAvgHeartRate">-- bpm</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🫁</div>
+                        <div class="stat-content">
+                            <div class="stat-label">实时呼吸频率</div>
+                            <div class="stat-value" id="bleAvgRespRate">-- bpm</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📡</div>
+                        <div class="stat-content">
+                            <div class="stat-label">接收数据点</div>
+                            <div class="stat-value" id="bleTotalDataPoints">0</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">⏱️</div>
+                        <div class="stat-content">
+                            <div class="stat-label">连接时长</div>
+                            <div class="stat-value" id="bleConnectTime">0 分钟</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🌡️</div>
+                        <div class="stat-content">
+                            <div class="stat-label">当前温度</div>
+                            <div class="stat-value" id="bleAvgTemp">-- °C</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 蓝牙图表区域 -->
+                <div class="charts-container">
+                    <div class="chart-row">
+                        <div class="chart-container">
+                            <h3>蓝牙 I/Q 实时信号</h3>
+                            <canvas id="bleIQChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3>蓝牙 I/Q 星座图</h3>
+                            <canvas id="bleConstellationChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="chart-row">
+                        <div class="chart-container">
+                            <h3>蓝牙 Gx/Gy/Gz 信号(陀螺仪)</h3>
+                            <canvas id="bleIMUChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3>蓝牙 温度变化 (°C)</h3>
+                            <canvas id="bleTemperatureChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="chart-row">
+                        <div class="chart-container">
+                            <h3>蓝牙呼吸波形</h3>
+                            <canvas id="bleRespiratoryChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3>蓝牙心跳波形</h3>
+                            <canvas id="bleHeartbeatChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 蓝牙动态生理信号监测（与文件上传模块等效） -->
+                <div class="ecg-section" id="bleEcgSection">
+                    <h3>🫀 蓝牙动态生理信号监测</h3>
+                    <div class="ecg-controls">
+                        <button class="btn btn-success" id="blePlayBtn" onclick="toggleBLEECGPlayback()">▶️ 播放</button>
+                        <button class="btn btn-secondary" id="blePauseBtn" onclick="toggleBLEECGPlayback()" style="display: none;">⏸️ 暂停</button>
+                        <button class="btn btn-info" onclick="resetBLEECG()">🔄 重置</button>
+                    </div>
+
+                    <div class="ecg-monitors">
+                        <div class="ecg-monitor respiratory-monitor">
+                            <div class="monitor-header">
+                                <h4>🫁 呼吸波形(蓝牙)</h4>
+                                <div class="vital-display">
+                                    <span class="vital-label">呼吸频率:</span>
+                                    <span class="vital-value" id="bleCurrentRespRate">-- bpm</span>
+                                </div>
+                            </div>
+                            <div class="ecg-screen" id="bleRespiratoryECG">
+                                <canvas id="bleRespiratoryECGCanvas"></canvas>
+                                <div class="ecg-grid"></div>
+                                <div class="ecg-cursor"></div>
+                            </div>
+                        </div>
+
+                        <div class="ecg-monitor heartbeat-monitor">
+                            <div class="monitor-header">
+                                <h4>💓 心跳波形(蓝牙)</h4>
+                                <div class="vital-display">
+                                    <span class="vital-label">心率:</span>
+                                    <span class="vital-value" id="bleCurrentHeartRate">-- bpm</span>
+                                </div>
+                            </div>
+                            <div class="ecg-screen" id="bleHeartbeatECG">
+                                <canvas id="bleHeartbeatECGCanvas"></canvas>
+                                <div class="ecg-grid"></div>
+                                <div class="ecg-cursor"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 蓝牙图表控制 -->
+                <div class="table-container">
+                    <h3>蓝牙数据控制</h3>
+                    <div class="table-actions">
+                        <button class="btn btn-warning" onclick="clearBluetoothData()">清空数据</button>
+                        <button class="btn btn-info" onclick="saveBluetoothData()">保存数据</button>
+                        <button class="btn btn-secondary" onclick="hideBluetoothCharts()">隐藏图表</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- 算法参数设置 -->
+        <aside class="settings-panel" id="settingsPanel">
+            <h3>⚙️ 算法参数</h3>
+            <div class="setting-group">
+                <label>采样率 (Hz):</label>
+                <input type="number" id="samplingRate" value="100" min="1" max="1000">
+            </div>
+            <div class="setting-group">
+                <label>心率范围 (bpm):</label>
+                <input type="number" id="heartRateMin" value="48" min="30" max="100" placeholder="最小值">
+                <input type="number" id="heartRateMax" value="180" min="100" max="300" placeholder="最大值">
+            </div>
+            <div class="setting-group">
+                <label>呼吸频率范围 (bpm):</label>
+                <input type="number" id="respRateMin" value="6" min="3" max="15" placeholder="最小值">
+                <input type="number" id="respRateMax" value="30" min="15" max="60" placeholder="最大值">
+            </div>
+            <div class="setting-group">
+                <label>滤波窗口大小:</label>
+                <input type="number" id="filterWindow" value="10" min="3" max="50">
+            </div>
+            <div class="setting-group">
+                <label>心率平滑长度:</label>
+                <input type="number" id="heartRateSmoothing" value="30" min="5" max="60" title="保留最近N次心率结果取平均，值越大越平滑但响应越慢">
+            </div>
+            <div class="setting-group">
+                <label>心率变化阈值(bpm):</label>
+                <input type="number" id="heartRateDelta" value="10" min="5" max="30" title="限制心率每次最大变化幅度，防止突变">
+            </div>
+            <button class="btn btn-primary" onclick="applySettings()">应用设置</button>
+        </aside>
+
+        <!-- 设置按钮 -->
+        <button class="settings-toggle" onclick="toggleSettings()">⚙️</button>
+    </div>
+
+    <!-- 加载指示器 -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">正在处理数据...</div>
+    </div>
+
+    <!-- Azure OpenAI配置模态框 -->
+    <div class="modal" id="aiConfigModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>配置Azure OpenAI</h3>
+                <span class="close" onclick="closeModal('aiConfigModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Azure OpenAI Endpoint:</label>
+                    <input type="text" id="azureEndpoint" placeholder="https://your-resource.openai.azure.com">
+                </div>
+                <div class="form-group">
+                    <label>API Key:</label>
+                    <input type="password" id="azureApiKey" placeholder="输入您的API密钥">
+                </div>
+                <div class="form-group">
+                    <label>Deployment Name:</label>
+                    <input type="text" id="azureDeployment" placeholder="gpt-4" value="gpt-4">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="saveAIConfig()">保存配置</button>
+                    <button class="btn btn-secondary" onclick="testAIConnection()">测试连接</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Prompt编辑器模态框 -->
+    <div class="modal" id="promptEditorModal" style="display: none;">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h3>自定义Prompt编辑器</h3>
+                <span class="close" onclick="closeModal('promptEditorModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="prompt-selector">
+                    <label>选择Prompt模板:</label>
+                    <select id="promptSelector" onchange="loadPromptTemplate()">
+                        <option value="">-- 选择模板 --</option>
+                    </select>
+                    <button class="btn btn-sm" onclick="createNewPrompt()">新建</button>
+                </div>
+                
+                <div class="form-group">
+                    <label>Prompt名称:</label>
+                    <input type="text" id="promptName" placeholder="输入Prompt名称">
+                </div>
+                
+                <div class="form-group">
+                    <label>描述:</label>
+                    <input type="text" id="promptDescription" placeholder="简要描述这个Prompt的用途">
+                </div>
+                
+                <div class="form-group">
+                    <label>Prompt模板:</label>
+                    <textarea id="promptTemplate" rows="15" placeholder="输入您的自定义prompt模板...
+
+可用变量：
+{avgHeartRate} - 平均心率
+{avgRespiratoryRate} - 平均呼吸频率
+{heartRateRange} - 心率范围
+{heartRateVariability} - 心率变异性
+{heartRateData} - 心率数据
+{respiratoryData} - 呼吸数据
+{ragContext} - RAG检索的相关知识
+{measurementTime} - 测量时间
+{duration} - 测量时长
+{dataQuality} - 数据质量"></textarea>
+                </div>
+                
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="savePrompt()">保存Prompt</button>
+                    <button class="btn btn-warning" onclick="deletePrompt()">删除</button>
+                    <button class="btn btn-info" onclick="previewPrompt()">预览</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- RAG知识库编辑器模态框 -->
+    <div class="modal" id="ragEditorModal" style="display: none;">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h3>RAG知识库管理</h3>
+                <span class="close" onclick="closeModal('ragEditorModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="rag-controls">
+                    <button class="btn btn-primary" onclick="addRAGEntry()">添加知识条目</button>
+                    <button class="btn btn-info" onclick="importRAGData()">导入知识库</button>
+                    <button class="btn btn-success" onclick="exportRAGData()">导出知识库</button>
+                </div>
+                
+                <div class="rag-list" id="ragList">
+                    <!-- RAG条目列表将在这里动态生成 -->
+                </div>
+                
+                <div class="rag-editor" id="ragEditor" style="display: none;">
+                    <h4>编辑知识条目</h4>
+                    <div class="form-group">
+                        <label>条目ID:</label>
+                        <input type="text" id="ragEntryId" placeholder="唯一标识符">
+                    </div>
+                    <div class="form-group">
+                        <label>关键词 (用逗号分隔):</label>
+                        <input type="text" id="ragKeywords" placeholder="心率,呼吸,正常范围">
+                    </div>
+                    <div class="form-group">
+                        <label>知识内容:</label>
+                        <textarea id="ragContent" rows="10" placeholder="输入相关的医学知识内容..."></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" onclick="saveRAGEntry()">保存</button>
+                        <button class="btn btn-secondary" onclick="cancelRAGEdit()">取消</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="radar-processor.js?v=20260113-1"></script>
+    <script src="azure-gpt.js?v=20260113-1"></script>
+    <script src="app.js?v=20260113-1"></script>
+</body>
+</html>

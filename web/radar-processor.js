@@ -4,10 +4,10 @@
  */
 
 class RadarDataProcessor {
-    constructor(samplingRate = 100) {
+    constructor(samplingRate = 50) {
         this.fs = samplingRate;
-        this.nShort = 1000;  // 短数据长度
-        this.NLong = 2000;   // 长数据长度
+        this.nShort = 500;   // 短数据长度
+        this.NLong = 1000;   // 长数据长度
         
         // 高通滤波器参数（简化版本）
         this.HPF_short_4_par = [
@@ -280,9 +280,9 @@ class RadarDataProcessor {
     applyFilters(phaseData) {
         try {
             // 呼吸波形提取 (参考main.py第245-246行和第177-179行)
-            // 使用滑动平均滤波，类似于np_move_avg
-            let respiratoryWave = this.movingAverage(Array.from(phaseData), 10);
-            respiratoryWave = this.movingAverage(respiratoryWave, 5);
+            // 使用滑动平均滤波，类似于np_move_avg (窗口减半: 10→5, 5→3)
+            let respiratoryWave = this.movingAverage(Array.from(phaseData), 5);
+            respiratoryWave = this.movingAverage(respiratoryWave, 3);
             
             // 去除最小值，类似于main.py第179行
             const minVal = Math.min(...respiratoryWave);
@@ -646,9 +646,9 @@ class RadarDataProcessor {
             }
         }
 
-        // 呼吸波形（main.py 245-247 + 177-179）
-        let respiratoryWave = this.movingAverage(Array.from(phase), 10);
-        respiratoryWave = this.movingAverage(respiratoryWave, 5);
+        // 呼吸波形（main.py 245-247 + 177-179，窗口减半）
+        let respiratoryWave = this.movingAverage(Array.from(phase), 5);
+        respiratoryWave = this.movingAverage(respiratoryWave, 3);
         const minResp = Math.min(...respiratoryWave);
         respiratoryWave = respiratoryWave.map(v => v - minResp);
 

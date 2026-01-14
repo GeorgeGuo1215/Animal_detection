@@ -1591,3 +1591,62 @@ tbody tr:hover {
         border-color: #718096;
     }
 }
+
+/* 静息监测模块样式（独立） */
+.resting-stat-card {
+    background: white;
+    padding: 12px 15px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    min-width: 150px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+}
+
+.resting-stat-label {
+    font-size: 0.8rem;
+    color: #666;
+    margin-bottom: 5px;
+    font-weight: 500;
+}
+
+.resting-stat-value {
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: #333;
+}
+
+#restingStatusPanel {
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+#restingStateText {
+    padding: 5px 12px;
+    border-radius: 20px;
+    background: #f8f9fa;
+    display: inline-block;
+}
+
+#restingLog {
+    line-height: 1.5;
+}
+
+/* 静息监测按钮组 */
+#restingStartBtn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+}
+
+#restingStopBtn {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    border: none;
+}
+
+#restingSaveBtn {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    border: none;
+}

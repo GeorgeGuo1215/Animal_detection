@@ -4,10 +4,10 @@
 
 class RadarWebApp {
     constructor() {
-        // 采样率以右侧面板为准；根据 main.py 第30行，设备采样率为 100Hz
+        // 采样率以右侧面板为准；修改为 50Hz
         const srEl = document.getElementById('samplingRate');
         const sr = srEl ? parseInt(srEl.value, 10) : NaN;
-        const samplingRate = Number.isFinite(sr) && sr > 0 ? sr : 100;
+        const samplingRate = Number.isFinite(sr) && sr > 0 ? sr : 50;
         this.processor = new RadarDataProcessor(samplingRate);
         this.selectedFiles = [];
         this.processedResults = [];
@@ -77,6 +77,10 @@ class RadarWebApp {
         this.bleRecordingFlag = 0;  // 0: 不记录, 1: 记录中
         this.bleRecordingData = []; // 记录的数据缓存
         this.bleRecordingStartTime = null;
+        
+        // 当前心率和呼吸率（供静息监测模块使用）
+        this.currentHeartRate = null;
+        this.currentRespiratoryRate = null;
         
         this.initializeEventListeners();
         this.initializeCharts();
@@ -257,6 +261,29 @@ class RadarWebApp {
             startBtn.style.display = 'none';
             stopBtn.style.display = 'none';
             azureBtn.style.display = 'none';
+        }
+        
+        // 静息监测按钮（独立模块）
+        const restingStartBtn = document.getElementById('restingStartBtn');
+        const restingStopBtn = document.getElementById('restingStopBtn');
+        const restingSaveBtn = document.getElementById('restingSaveBtn');
+        const restingConfigBtn = document.getElementById('restingConfigBtn');
+        const restingClearBtn = document.getElementById('restingClearBtn');
+        
+        if (restingStartBtn) {
+            restingStartBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
+        }
+        if (restingStopBtn) {
+            // 由静息监测模块自己控制显示
+        }
+        if (restingSaveBtn) {
+            restingSaveBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
+        }
+        if (restingConfigBtn) {
+            restingConfigBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
+        }
+        if (restingClearBtn) {
+            restingClearBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
         }
     }
 
@@ -550,6 +577,11 @@ class RadarWebApp {
         this.bleDataCount++;
         document.getElementById('bleDataCount').textContent = this.bleDataCount;
         document.getElementById('bleTotalDataPoints').textContent = this.bleDataCount;
+        
+        // 通知静息监测模块（如果存在）
+        if (typeof restingMonitor !== 'undefined' && restingMonitor) {
+            restingMonitor.update();
+        }
 
         // 🔍 调试：在页面上显示最新的I/Q值（每10条更新一次）
         if (this.bleDataCount % 10 === 0) {
@@ -571,9 +603,9 @@ class RadarWebApp {
 
         // 每累计一段再做一次完整生理参数估计（降低更新频率以提高稳定性）
         // 参考main.py每收集一定数量数据才计算一次（第72400个计数）
-        const fs = (this.processor && Number.isFinite(this.processor.fs)) ? this.processor.fs : 100;
-        // 改为每2秒计算一次（200个点），而不是每秒
-        if (this.bleBufferI.length % (fs * 2) === 0 && this.bleBufferI.length >= fs * 5) {
+        const fs = (this.processor && Number.isFinite(this.processor.fs)) ? this.processor.fs : 50;
+        // 改为每1秒计算一次（50个点），更频繁更新
+        if (this.bleBufferI.length % fs === 0 && this.bleBufferI.length >= fs * 5) {
             this.updateBluetoothVitalSigns();
         }
     }
@@ -1803,14 +1835,14 @@ class RadarWebApp {
                 { label: 'Q通道', data: qDataForChart, borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1 }
             ]
         };
-        this.bleCharts.iq.update('none');
+        this.bleCharts.iq.update();  // 移除 'none'，让图表真正刷新
 
         const constellationSampleSize = Math.min(500, len);
         const step = Math.max(1, Math.floor(len / constellationSampleSize));
         const data = [];
         for (let i = start; i < len; i += step) data.push({ x: this.bleBufferI[i], y: this.bleBufferQ[i] });
         this.bleCharts.constellation.data = { datasets: [ { label: 'I/Q数据点', data, backgroundColor: 'rgba(54, 162, 235, 0.6)', pointRadius: 2 } ] };
-        this.bleCharts.constellation.update('none');
+        this.bleCharts.constellation.update();  // 移除 'none'，让图表真正刷新
 
         // 更新 IMU 图表（gx/gy/gz）
         if (this.bleCharts.imu && this.bleBufferIMU_X.length > 0) {
@@ -1822,7 +1854,7 @@ class RadarWebApp {
                     { label: 'gz', data: this.bleBufferIMU_Z.slice(start), borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.08)', tension: 0.1, pointRadius: 0 }
                 ]
             };
-            this.bleCharts.imu.update('none');
+            this.bleCharts.imu.update();  // 移除 'none'，让图表真正刷新
         }
 
         // 更新温度图表
@@ -1842,7 +1874,7 @@ class RadarWebApp {
                     }
                 ]
             };
-            this.bleCharts.temperature.update('none');
+            this.bleCharts.temperature.update();  // 移除 'none'，让图表真正刷新
             
             // 更新当前温度显示
             if (tempData.length > 0) {
@@ -1863,9 +1895,9 @@ class RadarWebApp {
      * 更新蓝牙生理参数（参考main.py的心率稳定算法）
      */
     updateBluetoothVitalSigns() {
-        // 增加窗口长度以提高稳定性（参考main.py使用1000-2000点）
-        const fs = (this.processor && Number.isFinite(this.processor.fs)) ? this.processor.fs : 100;
-        const windowSize = Math.min(this.bleBufferI.length, fs * 30); // 最近30秒（100Hz=>3000点）
+        // 增加窗口长度以提高稳定性（参考main.py使用500-1000点）
+        const fs = (this.processor && Number.isFinite(this.processor.fs)) ? this.processor.fs : 50;
+        const windowSize = Math.min(this.bleBufferI.length, fs * 30); // 最近30秒（50Hz=>1500点）
         const iData = new Float64Array(this.bleBufferI.slice(-windowSize));
         const qData = new Float64Array(this.bleBufferQ.slice(-windowSize));
         
@@ -1905,12 +1937,12 @@ class RadarWebApp {
 
             if (this.bleCharts.respiratory) {
                 this.bleCharts.respiratory.data = { labels: indices, datasets: [{ label: '呼吸波形(实时)', data: Array.from(respiratoryWave.slice(-sampleSize)), borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1 }] };
-                this.bleCharts.respiratory.update('none');
+                this.bleCharts.respiratory.update();  // 移除 'none' 让图表真正刷新
             }
 
             if (this.bleCharts.heartbeat) {
                 this.bleCharts.heartbeat.data = { labels: indices, datasets: [{ label: '心跳波形(实时)', data: Array.from(heartbeatWave.slice(-sampleSize)), borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1 }] };
-                this.bleCharts.heartbeat.update('none');
+                this.bleCharts.heartbeat.update();  // 移除 'none' 让图表真正刷新
             }
 
             // 推动ECG动态画布数据
@@ -1935,7 +1967,14 @@ class RadarWebApp {
                 // 裁剪，避免无限增长
                 if (resTrack.data.length > 5000) resTrack.data.splice(0, resTrack.data.length - 5000);
                 if (hbTrack.data.length > 5000) hbTrack.data.splice(0, hbTrack.data.length - 5000);
-                if ((resTrack.playing || hbTrack.playing) && !this._bleECG.raf) this._bleECG.draw();
+                // 始终刷新一次画布，即使不在播放状态
+                if (this._bleECG.draw) {
+                    this._bleECG.draw();
+                }
+                // 如果在播放状态，继续动画循环
+                if ((resTrack.playing || hbTrack.playing) && !this._bleECG.raf) {
+                    this._bleECG.raf = requestAnimationFrame(this._bleECG.draw);
+                }
             }
 
             // ===== 心率平滑处理（参考main.py第332-340行）=====
@@ -1981,6 +2020,10 @@ class RadarWebApp {
                 heartRate: displayHeartRate, 
                 respiratoryRate: displayRespRate 
             };
+            
+            // 更新当前心率和呼吸率（供静息监测模块使用）
+            this.currentHeartRate = displayHeartRate;
+            this.currentRespiratoryRate = displayRespRate;
             
             console.log(`生理参数: 原始HR=${heartRate}bpm, 平滑后HR=${displayHeartRate}bpm, RR=${displayRespRate}bpm (历史${this.heartRateHistory.length}次)`);
             
@@ -2297,8 +2340,8 @@ function startSimulationTest() {
             return;
         }
         
-        const fs = 100;
-        const t = dataCount / fs; // 采样率100Hz
+        const fs = 50;
+        const t = dataCount / fs; // 采样率50Hz
         // 模拟信号: 呼吸(0.3Hz=18bpm) + 心率(1.25Hz=75bpm) + 噪声
         const respiratorySignal = 0.5 * Math.sin(2 * Math.PI * 0.3 * t);
         const heartSignal = 0.2 * Math.sin(2 * Math.PI * 1.25 * t);
@@ -2323,9 +2366,9 @@ function startSimulationTest() {
         app.handleBLELine(simulatedLine);
         
         dataCount++;
-    }, 10); // 100Hz采样率 = 10ms间隔
-    
-    app.addBLELog('📡 正在生成模拟心率75bpm、呼吸18bpm的数据（100Hz采样率）...');
+    }, 20); // 50Hz采样率 = 20ms间隔
+
+    app.addBLELog('📡 正在生成模拟心率75bpm、呼吸18bpm的数据（50Hz采样率）...');
 }
 
 // 停止模拟

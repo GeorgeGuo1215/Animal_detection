@@ -94,6 +94,7 @@ class RadarWebApp {
         this.initializeCharts();
         this.initializeBluetoothCharts();
         this.initializeBLEECG();
+        this.initializeFileECG();
         this.initializeHealthChat();
 
         // 初始化BLE事件
@@ -1196,6 +1197,9 @@ class RadarWebApp {
             document.getElementById('healthAnalysisSection').style.display = 'none';
         }
 
+        // JSON时隐藏部分图表，仅保留心率/呼吸时间序列
+        this.setChartVisibilityForJson(hasJsonData);
+
         // 显示结果区域
         document.getElementById('resultsSection').style.display = 'block';
         document.getElementById('resultsSection').classList.add('fade-in');
@@ -1877,6 +1881,103 @@ class RadarWebApp {
     }
 
     /**
+     * 初始化文件数据的动态ECG画布
+     */
+    initializeFileECG() {
+        const resCanvas = document.getElementById('respiratoryECGCanvas');
+        const hbCanvas = document.getElementById('heartbeatECGCanvas');
+        if (!resCanvas || !hbCanvas) return;
+
+        const ctxRes = resCanvas.getContext('2d');
+        const ctxHb = hbCanvas.getContext('2d');
+
+        // 从处理结果中获取数据
+        const firstResult = this.processedResults.find(r => r.respiratoryWave && r.heartbeatWave);
+        if (!firstResult) return;
+
+        this._fileECG = {
+            res: {
+                canvas: resCanvas,
+                ctx: ctxRes,
+                data: Array.from(firstResult.respiratoryWave),
+                playing: false,
+                cursor: 0
+            },
+            hb: {
+                canvas: hbCanvas,
+                ctx: ctxHb,
+                data: Array.from(firstResult.heartbeatWave),
+                playing: false,
+                cursor: 0
+            },
+            raf: null
+        };
+
+        const draw = () => {
+            const { res, hb } = this._fileECG;
+
+            // 绘制呼吸波形
+            [res, hb].forEach(track => {
+                const { canvas, ctx, data, cursor } = track;
+                const w = canvas.width = canvas.clientWidth || 600;
+                const h = canvas.height = canvas.clientHeight || 160;
+                ctx.clearRect(0, 0, w, h);
+
+                // 绘制网格
+                ctx.strokeStyle = '#e0e0e0';
+                ctx.lineWidth = 1;
+                for (let x = 0; x < w; x += 20) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, h);
+                    ctx.stroke();
+                }
+                for (let y = 0; y < h; y += 20) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(w, y);
+                    ctx.stroke();
+                }
+
+                // 绘制波形
+                if (data.length > 0) {
+                    ctx.strokeStyle = track === res ? '#28a745' : '#dc3545';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+
+                    const displayPoints = Math.min(200, data.length);
+                    const startIdx = Math.max(0, cursor - displayPoints);
+
+                    for (let i = 0; i < displayPoints && startIdx + i < data.length; i++) {
+                        const x = (i / displayPoints) * w;
+                        const value = data[startIdx + i];
+                        const y = h/2 - (value * h/4); // 缩放并居中
+
+                        if (i === 0) {
+                            ctx.moveTo(x, y);
+                        } else {
+                            ctx.lineTo(x, y);
+                        }
+                    }
+                    ctx.stroke();
+                }
+            });
+
+            // 更新游标
+            if (res.playing || hb.playing) {
+                this._fileECG.res.cursor = (this._fileECG.res.cursor + 1) % Math.max(1, this._fileECG.res.data.length);
+                this._fileECG.hb.cursor = (this._fileECG.hb.cursor + 1) % Math.max(1, this._fileECG.hb.data.length);
+                this._fileECG.raf = requestAnimationFrame(draw);
+            } else {
+                cancelAnimationFrame(this._fileECG.raf);
+                this._fileECG.raf = null;
+            }
+        };
+
+        this._fileECG.draw = draw;
+    }
+
+    /**
      * 初始化图表
      */
     initializeCharts() {
@@ -2000,7 +2101,13 @@ class RadarWebApp {
 
         // 使用第一个成功的结果来显示波形
         const firstResult = results[0];
-        
+
+        // 如果是JSON数据，只更新心率和呼吸率时间序列图
+        if (firstResult.dataType === 'json') {
+            this.updateJsonCharts(results);
+            return;
+        }
+
         // 更新I/Q信号图
         const sampleSize = Math.min(1000, firstResult.iData.length);
         const indices = Array.from({length: sampleSize}, (_, i) => i);
@@ -2059,31 +2166,35 @@ class RadarWebApp {
         };
         this.charts.constellation.update();
 
-        // 更新呼吸波形
-        this.charts.respiratory.data = {
-            labels: indices,
-            datasets: [{
-                label: `呼吸波形 (${firstResult.respiratoryRate} bpm)`,
-                data: Array.from(firstResult.respiratoryWave.slice(0, sampleSize)),
-                borderColor: 'rgb(75, 192, 192)',
-                backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                tension: 0.1
-            }]
-        };
-        this.charts.respiratory.update();
+        // 更新呼吸波形（仅当有波形数据时）
+        if (firstResult.respiratoryWave) {
+            this.charts.respiratory.data = {
+                labels: indices,
+                datasets: [{
+                    label: `呼吸波形 (${firstResult.respiratoryRate} bpm)`,
+                    data: Array.from(firstResult.respiratoryWave.slice(0, sampleSize)),
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.respiratory.update();
+        }
 
-        // 更新心跳波形
-        this.charts.heartbeat.data = {
-            labels: indices,
-            datasets: [{
-                label: `心跳波形 (${firstResult.heartRate} bpm)`,
-                data: Array.from(firstResult.heartbeatWave.slice(0, sampleSize)),
-                borderColor: 'rgb(255, 99, 132)',
-                backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                tension: 0.1
-            }]
-        };
-        this.charts.heartbeat.update();
+        // 更新心跳波形（仅当有波形数据时）
+        if (firstResult.heartbeatWave) {
+            this.charts.heartbeat.data = {
+                labels: indices,
+                datasets: [{
+                    label: `心跳波形 (${firstResult.heartRate} bpm)`,
+                    data: Array.from(firstResult.heartbeatWave.slice(0, sampleSize)),
+                    borderColor: 'rgb(255, 99, 132)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.heartbeat.update();
+        }
 
         // 更新心率分布图
         const fileNames = results.map(r => r.fileName.substring(0, 10) + '...');
@@ -2193,6 +2304,117 @@ class RadarWebApp {
     }
 
     /**
+     * 更新JSON数据的图表（只显示心率和呼吸率时间序列）
+     */
+    updateJsonCharts(results) {
+        const jsonResults = results.filter(r => r.dataType === 'json');
+        if (jsonResults.length === 0) return;
+
+        const firstResult = jsonResults[0];
+
+        // 只更新心率和呼吸率时间序列图
+        if (firstResult.hrData && firstResult.hrData.length > 0) {
+            const hrTimeLabels = Array.from({length: firstResult.hrData.length}, (_, i) => i + 1);
+            this.charts.heartRateTime.data = {
+                labels: hrTimeLabels,
+                datasets: [{
+                    label: '心率 (bpm)',
+                    data: firstResult.hrData,
+                    borderColor: 'rgb(255, 99, 132)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.heartRateTime.update();
+        }
+
+        if (firstResult.rrData && firstResult.rrData.length > 0) {
+            const rrTimeLabels = Array.from({length: firstResult.rrData.length}, (_, i) => i + 1);
+            this.charts.respRateTime.data = {
+                labels: rrTimeLabels,
+                datasets: [{
+                    label: '呼吸频率 (bpm)',
+                    data: firstResult.rrData,
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.respRateTime.update();
+        }
+
+        // 清空其他图表（雷达信号相关）
+        this.clearRadarCharts();
+    }
+
+    /**
+     * JSON数据时隐藏雷达相关图表
+     */
+    setChartVisibilityForJson(hasJsonData) {
+        const hideIds = [
+            'iqChart',
+            'constellationChart',
+            'respiratoryChart',
+            'heartbeatChart',
+            'heartRateChart',
+            'respRateChart'
+        ];
+        const ecgSection = document.querySelector('.ecg-section');
+
+        hideIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el && el.parentElement) {
+                el.parentElement.style.display = hasJsonData ? 'none' : 'block';
+            }
+        });
+
+        if (ecgSection) {
+            ecgSection.style.display = hasJsonData ? 'none' : 'block';
+        }
+    }
+
+    /**
+     * 清空雷达信号相关的图表（用于JSON数据时）
+     */
+    clearRadarCharts() {
+        // 清空I/Q信号图
+        if (this.charts.iq) {
+            this.charts.iq.data = { labels: [], datasets: [] };
+            this.charts.iq.update();
+        }
+
+        // 清空星座图
+        if (this.charts.constellation) {
+            this.charts.constellation.data = { datasets: [] };
+            this.charts.constellation.update();
+        }
+
+        // 清空呼吸波形图
+        if (this.charts.respiratory) {
+            this.charts.respiratory.data = { labels: [], datasets: [] };
+            this.charts.respiratory.update();
+        }
+
+        // 清空心跳波形图
+        if (this.charts.heartbeat) {
+            this.charts.heartbeat.data = { labels: [], datasets: [] };
+            this.charts.heartbeat.update();
+        }
+
+        // 清空心率分布图
+        if (this.charts.heartRate) {
+            this.charts.heartRate.data = { labels: [], datasets: [] };
+            this.charts.heartRate.update();
+        }
+
+        // 清空呼吸频率分布图
+        if (this.charts.respRate) {
+            this.charts.respRate.data = { labels: [], datasets: [] };
+            this.charts.respRate.update();
+        }
+    }
+
+    /**
      * 更新结果表格
      */
     updateResultsTable() {
@@ -2201,18 +2423,33 @@ class RadarWebApp {
 
         this.processedResults.forEach(result => {
             const row = document.createElement('tr');
-            
+
             if (result.status === 'success') {
-                row.innerHTML = `
-                    <td>${result.fileName}</td>
-                    <td>${result.dataPoints.toLocaleString()}</td>
-                    <td>${result.heartRate}</td>
-                    <td>${result.respiratoryRate}</td>
-                    <td>${result.circleCenter[0].toFixed(4)}</td>
-                    <td>${result.circleCenter[1].toFixed(4)}</td>
-                    <td>${result.circleRadius.toFixed(4)}</td>
-                    <td><span class="status-success">成功</span></td>
-                `;
+                if (result.dataType === 'json') {
+                    // JSON数据格式
+                    row.innerHTML = `
+                        <td>${result.fileName}</td>
+                        <td>${result.dataPoints.toLocaleString()}</td>
+                        <td>${result.heartRate}</td>
+                        <td>${result.respiratoryRate}</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td><span class="status-success">JSON数据</span></td>
+                    `;
+                } else {
+                    // TXT数据格式（原始雷达数据）
+                    row.innerHTML = `
+                        <td>${result.fileName}</td>
+                        <td>${result.dataPoints.toLocaleString()}</td>
+                        <td>${result.heartRate}</td>
+                        <td>${result.respiratoryRate}</td>
+                        <td>${result.circleCenter[0].toFixed(4)}</td>
+                        <td>${result.circleCenter[1].toFixed(4)}</td>
+                        <td>${result.circleRadius.toFixed(4)}</td>
+                        <td><span class="status-success">雷达数据</span></td>
+                    `;
+                }
             } else {
                 row.innerHTML = `
                     <td>${result.fileName}</td>
@@ -3132,6 +3369,37 @@ function hideBluetoothCharts() {
     }
 }
 
+// 文件数据ECG播放控制
+function toggleECGPlayback() {
+    if (!app) return;
+
+    // 初始化ECG播放器（如果还没有初始化）
+    if (!app._fileECG) {
+        app.initializeFileECG();
+    }
+
+    if (!app._fileECG) return;
+
+    const playing = app._fileECG.res.playing || app._fileECG.hb.playing;
+    const playBtn = document.getElementById('playBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+
+    if (playing) {
+        // 暂停播放
+        app._fileECG.res.playing = false;
+        app._fileECG.hb.playing = false;
+        pauseBtn.style.display = 'none';
+        playBtn.style.display = 'inline-block';
+    } else {
+        // 开始播放
+        app._fileECG.res.playing = true;
+        app._fileECG.hb.playing = true;
+        playBtn.style.display = 'none';
+        pauseBtn.style.display = 'inline-block';
+        if (!app._fileECG.raf) app._fileECG.draw();
+    }
+}
+
 // BLE ECG 控制
 function toggleBLEECGPlayback() {
     if (!app || !app._bleECG) return;
@@ -3149,6 +3417,43 @@ function toggleBLEECGPlayback() {
         playBtn.style.display = 'none';
         pauseBtn.style.display = 'inline-block';
         if (!app._bleECG.raf) app._bleECG.draw();
+    }
+}
+
+function resetECG() {
+    if (!app || !app._fileECG) return;
+    if (app._fileECG) {
+        app._fileECG.res.cursor = 0;
+        app._fileECG.hb.cursor = 0;
+        app._fileECG.res.playing = false;
+        app._fileECG.hb.playing = false;
+
+        const playBtn = document.getElementById('playBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
+        if (playBtn && pauseBtn) {
+            pauseBtn.style.display = 'none';
+            playBtn.style.display = 'inline-block';
+        }
+    }
+}
+
+function testECG() {
+    if (!app) return;
+
+    // 确保有处理结果
+    if (app.processedResults.length === 0) {
+        app.showMessage('请先上传并处理数据文件', 'warning');
+        return;
+    }
+
+    // 初始化并测试ECG播放
+    app.initializeFileECG();
+    if (app._fileECG) {
+        // 自动开始播放
+        toggleECGPlayback();
+        app.showMessage('ECG测试播放已启动', 'success');
+    } else {
+        app.showMessage('没有可播放的ECG数据', 'warning');
     }
 }
 

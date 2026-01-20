@@ -34,6 +34,20 @@
                     <button class="btn btn-primary" id="bleAzureBtn" onclick="bleAzureDiagnose()" style="display:none; margin-left:10px;">AI诊断(本次录制)</button>
                     <button class="btn btn-warning" onclick="startSimulationTest()" style="margin-left:10px;">模拟测试</button>
                 </div>
+
+                <div class="ble-upload-config" style="margin-top:12px; display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+                    <label for="bleUploadUrl">上报接口:</label>
+                    <input id="bleUploadUrl" type="text" placeholder="http://127.0.0.1:9001/ingest" style="min-width:320px;">
+                    <label for="bleAnimalId">animal_id:</label>
+                    <input id="bleAnimalId" type="text" placeholder="dog_001" style="width:120px;">
+                    <label for="bleDeviceId">device_id:</label>
+                    <input id="bleDeviceId" type="text" placeholder="ble_device_01" style="width:140px;">
+                    <label for="bleUploadInterval">间隔(s):</label>
+                    <input id="bleUploadInterval" type="number" min="5" value="10" style="width:80px;">
+                    <button class="btn btn-success" id="bleStartUploadBtn" onclick="bleStartUpload()" style="display:none;">开始上传</button>
+                    <button class="btn btn-danger" id="bleStopUploadBtn" onclick="bleStopUpload()" style="display:none;">停止上传</button>
+                    <span id="bleUploadStatus" style="color:#666;">未上传</span>
+                </div>
                 
                 <!-- 连接状态和实时数据显示 -->
                 <div class="ble-status" style="margin-top:15px;">
@@ -66,6 +80,10 @@
                             <div class="stat-item">
                                 <span class="stat-label">当前呼吸:</span>
                                 <span class="stat-value" id="bleCurrentResp">-- bpm</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">I/Q 调试:</span>
+                                <span class="stat-value" id="bleCurrentIQ">--</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-label">当前温度:</span>

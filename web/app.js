@@ -77,12 +77,20 @@ class RadarWebApp {
         this.bleRecordingFlag = 0;  // 0: 不记录, 1: 记录中
         this.bleRecordingData = []; // 记录的数据缓存
         this.bleRecordingStartTime = null;
+
+        // ===== BLE 上报到 Integration =====
+        this.bleUploadEnabled = false;
+        this.bleUploadIntervalSec = 10;
+        this.bleUploadWindowSec = 10;
+        this.bleUploadTimer = null;
+        this.bleLastUploadTs = 0;
         
         // 当前心率和呼吸率（供静息监测模块使用）
         this.currentHeartRate = null;
         this.currentRespiratoryRate = null;
         
         this.initializeEventListeners();
+        this.initBleUploadConfig();
         this.initializeCharts();
         this.initializeBluetoothCharts();
         this.initializeBLEECG();
@@ -167,6 +175,26 @@ class RadarWebApp {
         settingsToggle.addEventListener('click', () => this.toggleSettings());
     }
 
+    initBleUploadConfig() {
+        const urlEl = document.getElementById('bleUploadUrl');
+        const animalEl = document.getElementById('bleAnimalId');
+        const deviceEl = document.getElementById('bleDeviceId');
+        const intervalEl = document.getElementById('bleUploadInterval');
+
+        if (urlEl) {
+            urlEl.value = localStorage.getItem('bleUploadUrl') || 'http://127.0.0.1:9001/ingest';
+        }
+        if (animalEl) {
+            animalEl.value = localStorage.getItem('bleAnimalId') || '';
+        }
+        if (deviceEl) {
+            deviceEl.value = localStorage.getItem('bleDeviceId') || '';
+        }
+        if (intervalEl) {
+            intervalEl.value = localStorage.getItem('bleUploadInterval') || String(this.bleUploadIntervalSec);
+        }
+    }
+
     /**
      * 初始化 BLE 事件
      */
@@ -224,6 +252,9 @@ class RadarWebApp {
             this.stopBluetoothTimer();
             // 停止任何模拟数据
             this.stopSimulation();
+
+            // 断开后停止上报
+            this.stopBleUpload();
             
             this.updateBLEButtons();
         };
@@ -245,6 +276,8 @@ class RadarWebApp {
         const startBtn = document.getElementById('bleStartRecordBtn');
         const stopBtn = document.getElementById('bleStopRecordBtn');
         const azureBtn = document.getElementById('bleAzureBtn');
+        const uploadStartBtn = document.getElementById('bleStartUploadBtn');
+        const uploadStopBtn = document.getElementById('bleStopUploadBtn');
         if (!c || !d || !s || !startBtn || !stopBtn || !azureBtn) return;
         
         c.style.display = this.bleConnected ? 'none' : 'inline-block';
@@ -257,10 +290,18 @@ class RadarWebApp {
             startBtn.style.display = this.bleRecordingFlag === 1 ? 'none' : 'inline-block';
             stopBtn.style.display = this.bleRecordingFlag === 1 ? 'inline-block' : 'none';
             azureBtn.style.display = 'inline-block';
+            if (uploadStartBtn && uploadStopBtn) {
+                uploadStartBtn.style.display = this.bleUploadEnabled ? 'none' : 'inline-block';
+                uploadStopBtn.style.display = this.bleUploadEnabled ? 'inline-block' : 'none';
+            }
         } else {
             startBtn.style.display = 'none';
             stopBtn.style.display = 'none';
             azureBtn.style.display = 'none';
+            if (uploadStartBtn && uploadStopBtn) {
+                uploadStartBtn.style.display = 'none';
+                uploadStopBtn.style.display = 'none';
+            }
         }
         
         // 静息监测按钮（独立模块）
@@ -284,6 +325,200 @@ class RadarWebApp {
         }
         if (restingClearBtn) {
             restingClearBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
+        }
+    }
+
+    _setBleUploadStatus(text) {
+        const statusEl = document.getElementById('bleUploadStatus');
+        if (statusEl) statusEl.textContent = text;
+    }
+
+    _getBleUploadConfig() {
+        const urlEl = document.getElementById('bleUploadUrl');
+        const animalEl = document.getElementById('bleAnimalId');
+        const deviceEl = document.getElementById('bleDeviceId');
+        const intervalEl = document.getElementById('bleUploadInterval');
+
+        const url = urlEl ? urlEl.value.trim() : '';
+        const animalId = animalEl ? animalEl.value.trim() : '';
+        const deviceId = deviceEl ? deviceEl.value.trim() : '';
+        const intervalSec = intervalEl ? parseInt(intervalEl.value, 10) : this.bleUploadIntervalSec;
+
+        return {
+            url,
+            animalId,
+            deviceId,
+            intervalSec: Number.isFinite(intervalSec) && intervalSec > 0 ? intervalSec : this.bleUploadIntervalSec
+        };
+    }
+
+    startBleUpload() {
+        if (!this.bleConnected) {
+            alert('请先连接蓝牙设备');
+            return;
+        }
+        const cfg = this._getBleUploadConfig();
+        if (!cfg.url) {
+            alert('请填写上报接口地址');
+            return;
+        }
+        if (!cfg.animalId) {
+            alert('请填写 animal_id');
+            return;
+        }
+        if (!cfg.deviceId) {
+            alert('请填写 device_id');
+            return;
+        }
+
+        localStorage.setItem('bleUploadUrl', cfg.url);
+        localStorage.setItem('bleAnimalId', cfg.animalId);
+        localStorage.setItem('bleDeviceId', cfg.deviceId);
+        localStorage.setItem('bleUploadInterval', String(cfg.intervalSec));
+
+        this.bleUploadEnabled = true;
+        this.bleUploadIntervalSec = cfg.intervalSec;
+        this._setBleUploadStatus('上传中');
+        this.updateBLEButtons();
+
+        if (this.bleUploadTimer) clearInterval(this.bleUploadTimer);
+        this._sendBleUploadOnce();
+        this.bleUploadTimer = setInterval(() => this._sendBleUploadOnce(), this.bleUploadIntervalSec * 1000);
+    }
+
+    stopBleUpload() {
+        this.bleUploadEnabled = false;
+        if (this.bleUploadTimer) {
+            clearInterval(this.bleUploadTimer);
+            this.bleUploadTimer = null;
+        }
+        this._setBleUploadStatus('未上传');
+        this.updateBLEButtons();
+    }
+
+    _toEpochMs(ts) {
+        if (Number.isFinite(ts)) return Number(ts);
+        if (typeof ts === 'string') {
+            const parsed = Date.parse(ts);
+            if (!Number.isNaN(parsed)) return parsed;
+        }
+        return Date.now();
+    }
+
+    _formatTimezoneOffset() {
+        const offsetMin = -new Date().getTimezoneOffset();
+        const sign = offsetMin >= 0 ? '+' : '-';
+        const abs = Math.abs(offsetMin);
+        const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+        const mm = String(abs % 60).padStart(2, '0');
+        return `${sign}${hh}:${mm}`;
+    }
+
+    _buildBleEventPayload() {
+        const cfg = this._getBleUploadConfig();
+        const fs = (this.processor && Number.isFinite(this.processor.fs)) ? this.processor.fs : 50;
+        const len = this.bleBufferI.length;
+        if (len < Math.max(10, fs * 2)) {
+            this.addBLELog('⚠️ 上报跳过：数据点不足');
+            return null;
+        }
+
+        const windowSize = Math.min(len, Math.max(10, fs * this.bleUploadWindowSec));
+        const startIndex = len - windowSize;
+        const endIndex = len - 1;
+
+        const startTsMs = this._toEpochMs(this.bleBufferTimestamps[startIndex]);
+        const endTsMs = this._toEpochMs(this.bleBufferTimestamps[endIndex]);
+        const timezone = this._formatTimezoneOffset();
+
+        const accelSamples = [];
+        const tempSamples = [];
+        let lastTempSecond = -1;
+        for (let i = startIndex; i <= endIndex; i++) {
+            const tMs = Math.round(((i - startIndex) / fs) * 1000);
+            const tS = Math.floor((i - startIndex) / fs);
+            accelSamples.push({
+                t_ms: tMs,
+                x: Number(this.bleBufferIMU_X[i] || 0),
+                y: Number(this.bleBufferIMU_Y[i] || 0),
+                z: Number(this.bleBufferIMU_Z[i] || 0)
+            });
+            if (tS !== lastTempSecond) {
+                tempSamples.push({
+                    t_s: tS,
+                    value: Number(this.bleBufferTemperature[i] || 0)
+                });
+                lastTempSecond = tS;
+            }
+        }
+
+        const vitalsSamples = [];
+        if (Number.isFinite(this.currentHeartRate) || Number.isFinite(this.currentRespiratoryRate)) {
+            vitalsSamples.push({
+                t_s: 0,
+                hr: Number.isFinite(this.currentHeartRate) ? Number(this.currentHeartRate) : null,
+                rr: Number.isFinite(this.currentRespiratoryRate) ? Number(this.currentRespiratoryRate) : null
+            });
+        }
+
+        return {
+            event_id: `ble_${Date.now()}`,
+            ts: new Date(endTsMs).toISOString(),
+            animal: {
+                animal_id: cfg.animalId,
+                species: 'other',
+                name: 'unknown',
+                breed: 'unknown',
+                sex: 'unknown',
+                age_months: 0,
+                weight_kg: 0
+            },
+            device: {
+                device_id: cfg.deviceId,
+                firmware: 'unknown',
+                sampling_hz: { accel: fs, temperature: fs, temp: fs, vitals: 1 }
+            },
+            window: {
+                start_ts: new Date(startTsMs).toISOString(),
+                end_ts: new Date(endTsMs).toISOString(),
+                timezone
+            },
+            context: {
+                notes: 'web ble upload',
+                tags: ['web', 'ble'],
+                location: { lat: 0, lng: 0, accuracy_m: 0 }
+            },
+            signals: {
+                accel: { samples: accelSamples },
+                temperature: { samples: tempSamples },
+                vitals: { samples: vitalsSamples }
+            }
+        };
+    }
+
+    async _sendBleUploadOnce() {
+        if (!this.bleUploadEnabled) return;
+        const cfg = this._getBleUploadConfig();
+        if (!cfg.url) return;
+        const payload = this._buildBleEventPayload();
+        if (!payload) return;
+
+        try {
+            const resp = await fetch(cfg.url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!resp.ok) {
+                this.addBLELog(`❌ 上报失败: HTTP ${resp.status}`);
+                this._setBleUploadStatus(`失败(${resp.status})`);
+                return;
+            }
+            this.bleLastUploadTs = Date.now();
+            this._setBleUploadStatus(`上传中(最近: ${new Date(this.bleLastUploadTs).toLocaleTimeString()})`);
+        } catch (e) {
+            this.addBLELog(`❌ 上报异常: ${e.message}`);
+            this._setBleUploadStatus('异常');
         }
     }
 
@@ -588,8 +823,8 @@ class RadarWebApp {
             const lastI = this.bleBufferI[this.bleBufferI.length - 1];
             const lastQ = this.bleBufferQ[this.bleBufferQ.length - 1];
             const debugInfo = `I=${lastI?.toFixed(4)}V, Q=${lastQ?.toFixed(4)}V (共${this.bleBufferI.length}点)`;
-            // 在实时数据区域添加调试信息
-            const debugEl = document.getElementById('bleCurrentHR');
+            // 单独的调试区域，避免覆盖“当前心率”显示
+            const debugEl = document.getElementById('bleCurrentIQ');
             if (debugEl && this.bleDataCount < 100) {
                 debugEl.textContent = debugInfo;
             }
@@ -1707,6 +1942,8 @@ class RadarWebApp {
         document.getElementById('bleTotalDataPoints').textContent = '0';
         document.getElementById('bleCurrentHR').textContent = '-- bpm';
         document.getElementById('bleCurrentResp').textContent = '-- bpm';
+        const iqEl = document.getElementById('bleCurrentIQ');
+        if (iqEl) iqEl.textContent = '--';
         document.getElementById('bleAvgHeartRate').textContent = '-- bpm';
         document.getElementById('bleAvgRespRate').textContent = '-- bpm';
         const tempEl = document.getElementById('bleCurrentTemp');
@@ -2228,6 +2465,17 @@ function bleStopRecording() {
     if (app.bleRecordingFlag === 1) {
         app.toggleBluetoothRecording();
     }
+}
+
+// 蓝牙上报控制
+function bleStartUpload() {
+    if (!app) return;
+    app.startBleUpload();
+}
+
+function bleStopUpload() {
+    if (!app) return;
+    app.stopBleUpload();
 }
 
 // 蓝牙图表控制函数

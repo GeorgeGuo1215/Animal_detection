@@ -27,7 +27,7 @@ import logging
 
 CONFIG = {
     # API配置
-    "api_key": "sk-da11b2cbfad845f9b4bce5297385f53a",  # API密钥，留空则从环境变量读取
+    "api_key": "",  # API密钥，留空则从环境变量读取
     "base_url": "https://api.deepseek.com/v3.2_speciale_expires_on_20251215",  # API地址
     "model": "deepseek-reasoner",  # 模型名称 (deepseek-reasoner = DeepSeek-R1)
     "max_tokens": 8192,  # 最大生成token数

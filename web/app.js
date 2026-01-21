@@ -18,6 +18,17 @@ class RadarWebApp {
         this.bleCharts = {}; // 蓝牙数据图表
         this.bleBufferI = [];
         this.bleBufferQ = [];
+
+        // 自适应Y轴相关属性
+        this.adaptiveYAxisEnabled = true; // 启用自适应Y轴以放大显示微小变化
+        this.adaptiveSampleCount = 0; // 已收集的样本数量
+        this.adaptiveStabilizeThreshold = 100; // 稳定前需要的样本数
+        this.adaptiveStabilizeWindow = 50; // 检测稳定的窗口大小
+        this.adaptiveLastMinI = Infinity;
+        this.adaptiveLastMaxI = -Infinity;
+        this.adaptiveLastMinQ = Infinity;
+        this.adaptiveLastMaxQ = -Infinity;
+        this.adaptiveStabilized = false; // 是否已稳定
         // IMU(默认存陀螺仪)三轴缓存：gx/gy/gz
         this.bleBufferIMU_X = [];
         this.bleBufferIMU_Y = [];
@@ -1789,39 +1800,41 @@ class RadarWebApp {
         };
 
         // 初始化蓝牙专用图表
-        // I 通道
+        // I 通道 - 放大显示微小变化
         this.bleCharts.iSignal = new Chart(document.getElementById('bleISignalChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I 通道实时信号' } },
+            options: {
+                ...chartOptions,
+                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I 通道实时信号 (自适应放大)' } },
                 scales: {
                     x: { display: true, title: { display: true, text: '采样点' } },
                     y: {
                         display: true,
                         title: { display: true, text: '幅度 (V)' },
-                        min: 2.0,
-                        max: 3.0 // 进一步缩小范围以显示更多细节 2.0-3.0V
+                        min: 1.5,    // 进一步放大，聚焦2.0-2.5V的微小变化
+                        max: 2.5,    // 极小范围以最大化显示细节
+                        beginAtZero: false
                     }
                 }
             }
         });
 
-        // Q 通道
+        // Q 通道 - 放大显示微小变化
         this.bleCharts.qSignal = new Chart(document.getElementById('bleQSignalChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 Q 通道实时信号' } },
+            options: {
+                ...chartOptions,
+                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 Q 通道实时信号 (自适应放大)' } },
                 scales: {
                     x: { display: true, title: { display: true, text: '采样点' } },
                     y: {
                         display: true,
                         title: { display: true, text: '幅度 (V)' },
-                        min: 2.0,
-                        max: 3.0 // 进一步缩小范围以显示更多细节 2.0-3.0V
+                        min: 1.5,    // 进一步放大，聚焦2.0-2.5V的微小变化
+                        max: 2.5,    // 极小范围以最大化显示细节
+                        beginAtZero: false
                     }
                 }
             }
@@ -2061,15 +2074,21 @@ class RadarWebApp {
         this.charts.iSignal = new Chart(document.getElementById('iSignalChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: 'I 通道信号' } },
+            options: {
+                ...chartOptions,
+                plugins: { ...chartOptions.plugins, title: { display: true, text: 'I 通道信号 (放大显示)' } },
                 scales: {
                     x: { display: true, title: { display: true, text: '采样点' } },
-                    y: { 
-                        display: true, 
-                        title: { display: true, text: '幅度' },
-                        // min: 0, max: 3.5 // 文件模式下可能不需要严格固定，或者根据实际数据范围
+                    y: {
+                        display: true,
+                        title: { display: true, text: '幅度 (V)' },
+                        beginAtZero: false,
+                        // 动态放大范围以显示更多细节
+                        ticks: {
+                            callback: function(value, index, values) {
+                                return value.toFixed(4); // 显示更多小数位以观察微小变化
+                            }
+                        }
                     }
                 }
             }
@@ -2079,15 +2098,21 @@ class RadarWebApp {
         this.charts.qSignal = new Chart(document.getElementById('qSignalChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { 
-                ...chartOptions, 
-                plugins: { ...chartOptions.plugins, title: { display: true, text: 'Q 通道信号' } },
+            options: {
+                ...chartOptions,
+                plugins: { ...chartOptions.plugins, title: { display: true, text: 'Q 通道信号 (放大显示)' } },
                 scales: {
                     x: { display: true, title: { display: true, text: '采样点' } },
-                    y: { 
-                        display: true, 
-                        title: { display: true, text: '幅度' },
-                        // min: 0, max: 3.5
+                    y: {
+                        display: true,
+                        title: { display: true, text: '幅度 (V)' },
+                        beginAtZero: false,
+                        // 动态放大范围以显示更多细节
+                        ticks: {
+                            callback: function(value, index, values) {
+                                return value.toFixed(4); // 显示更多小数位以观察微小变化
+                            }
+                        }
                     }
                 }
             }
@@ -2191,33 +2216,69 @@ class RadarWebApp {
         // 更新I/Q信号图
         const sampleSize = Math.min(1000, firstResult.iData.length);
         const indices = Array.from({length: sampleSize}, (_, i) => i);
-        
+
+        // 计算I通道数据的统计信息以实现动态放大
+        const iDataSlice = firstResult.iData.slice(0, sampleSize);
+        const iMin = Math.min(...iDataSlice);
+        const iMax = Math.max(...iDataSlice);
+        const iRange = iMax - iMin;
+        const iPadding = iRange * 0.05; // 5% padding
+
+        // 设置I通道Y轴动态范围（放大显示微小变化）
+        const iYAxisMin = iMin - iPadding;
+        const iYAxisMax = iMax + iPadding;
+
         // 更新 I 通道
         this.charts.iSignal.data = {
             labels: indices,
             datasets: [{
                 label: 'I通道',
-                data: Array.from(firstResult.iData.slice(0, sampleSize)),
+                data: Array.from(iDataSlice),
                 borderColor: 'rgb(75, 192, 192)',
                 backgroundColor: 'rgba(75, 192, 192, 0.2)',
                 tension: 0.1,
                 pointRadius: 0
             }]
         };
+
+        // 动态调整I通道Y轴范围以放大显示细节
+        if (this.charts.iSignal.options.scales.y) {
+            this.charts.iSignal.options.scales.y.min = iYAxisMin;
+            this.charts.iSignal.options.scales.y.max = iYAxisMax;
+        }
+
         this.charts.iSignal.update();
+
+        // 计算Q通道数据的统计信息以实现动态放大
+        const qDataSlice = firstResult.qData.slice(0, sampleSize);
+        const qMin = Math.min(...qDataSlice);
+        const qMax = Math.max(...qDataSlice);
+        const qRange = qMax - qMin;
+        const qPadding = qRange * 0.05; // 5% padding
+
+        // 设置Q通道Y轴动态范围（放大显示微小变化）
+        const qYAxisMin = qMin - qPadding;
+        const qYAxisMax = qMax + qPadding;
 
         // 更新 Q 通道
         this.charts.qSignal.data = {
             labels: indices,
             datasets: [{
                 label: 'Q通道',
-                data: Array.from(firstResult.qData.slice(0, sampleSize)),
+                data: Array.from(qDataSlice),
                 borderColor: 'rgb(255, 99, 132)',
                 backgroundColor: 'rgba(255, 99, 132, 0.2)',
                 tension: 0.1,
                 pointRadius: 0
             }]
         };
+
+        // 动态调整Q通道Y轴范围以放大显示细节
+        if (this.charts.qSignal.options.scales.y) {
+            this.charts.qSignal.options.scales.y.min = qYAxisMin;
+            this.charts.qSignal.options.scales.y.max = qYAxisMax;
+        }
+
         this.charts.qSignal.update();
 
         // 更新星座图
@@ -2866,6 +2927,24 @@ class RadarWebApp {
         this.lastStableHeartRate = 70;
         this.lastStableRespRate = 18;
 
+        // 重置自适应Y轴状态
+        this.adaptiveSampleCount = 0;
+        this.adaptiveLastMinI = Infinity;
+        this.adaptiveLastMaxI = -Infinity;
+        this.adaptiveLastMinQ = Infinity;
+        this.adaptiveLastMaxQ = -Infinity;
+        this.adaptiveStabilized = false;
+
+        // 重置图表Y轴到初始范围
+        if (this.bleCharts.iSignal) {
+            this.bleCharts.iSignal.options.scales.y.min = 0;
+            this.bleCharts.iSignal.options.scales.y.max = 4.0;
+        }
+        if (this.bleCharts.qSignal) {
+            this.bleCharts.qSignal.options.scales.y.min = 0;
+            this.bleCharts.qSignal.options.scales.y.max = 4.0;
+        }
+
         // 重置丢包统计
         this.bleStats = {
             startRxTs: 0,
@@ -2995,20 +3074,152 @@ class RadarWebApp {
             });
             return;
         }
+
+        // 调试：检查数据缓冲区状态
+        if (this.bleDataCount === 10) {
+            console.log('📊 数据缓冲区状态:', {
+                I长度: this.bleBufferI.length,
+                Q长度: this.bleBufferQ.length,
+                IMU_X长度: this.bleBufferIMU_X.length,
+                IMU_Y长度: this.bleBufferIMU_Y.length,
+                IMU_Z长度: this.bleBufferIMU_Z.length,
+                温度长度: this.bleBufferTemperature.length
+            });
+        }
         const len = this.bleBufferI.length;
         if (len < 10) return;
 
-        // 🔍 调试：打印buffer统计
-        if (this.bleDataCount <= 100 && this.bleDataCount % 50 === 0) {
-            console.log(`\n📊 Buffer统计 (总点数=${len}):`);
-            console.log(`  I通道: 长度=${this.bleBufferI.length}, 最小=${Math.min(...this.bleBufferI).toFixed(4)}, 最大=${Math.max(...this.bleBufferI).toFixed(4)}`);
-            console.log(`  Q通道: 长度=${this.bleBufferQ.length}, 最小=${Math.min(...this.bleBufferQ).toFixed(4)}, 最大=${Math.max(...this.bleBufferQ).toFixed(4)}`);
-            console.log(`  最后5个I值:`, this.bleBufferI.slice(-5).map(v => v.toFixed(4)));
-            console.log(`  最后5个Q值:`, this.bleBufferQ.slice(-5).map(v => v.toFixed(4)));
-            if (this.bleBufferTemperature.length > 0) {
-                console.log(`  温度: 长度=${this.bleBufferTemperature.length}, 当前=${this.bleBufferTemperature[this.bleBufferTemperature.length - 1].toFixed(1)}°C`);
+        // 自适应Y轴调节逻辑（性能优化：降低计算频率）
+        if (this.adaptiveYAxisEnabled && this.bleDataCount % 5 === 0) { // 每5个数据点计算一次
+            this.adaptiveSampleCount++;
+
+            // 收集最近数据的范围
+            const recentDataSize = Math.min(len, this.adaptiveStabilizeWindow);
+            const startIdx = len - recentDataSize;
+            const recentI = this.bleBufferI.slice(startIdx);
+            const recentQ = this.bleBufferQ.slice(startIdx);
+
+            const currentMinI = Math.min(...recentI);
+            const currentMaxI = Math.max(...recentI);
+            const currentMinQ = Math.min(...recentQ);
+            const currentMaxQ = Math.max(...recentQ);
+
+            // 检测信号范围是否发生显著变化（需要重新自适应）
+            let rangeChanged = false;
+            if (this.adaptiveStabilized) {
+                const currentRangeI = currentMaxI - currentMinI;
+                const currentRangeQ = currentMaxQ - currentMinQ;
+                const stabilizedRangeI = this.adaptiveLastMaxI - this.adaptiveLastMinI;
+                const stabilizedRangeQ = this.adaptiveLastMaxQ - this.adaptiveLastMinQ;
+
+                // 如果当前范围与稳定范围差异超过20%（降低阈值，提高敏感度）
+                const rangeChangeThreshold = 0.2;
+                if (Math.abs(currentRangeI - stabilizedRangeI) / Math.max(stabilizedRangeI, 0.01) > rangeChangeThreshold ||
+                    Math.abs(currentRangeQ - stabilizedRangeQ) / Math.max(stabilizedRangeQ, 0.01) > rangeChangeThreshold) {
+                    rangeChanged = true;
+                    console.log(`🔄 检测到信号范围变化: I(${stabilizedRangeI.toFixed(3)}→${currentRangeI.toFixed(3)}), Q(${stabilizedRangeQ.toFixed(3)}→${currentRangeQ.toFixed(3)})`);
+                }
+
+                // 或者如果信号偏移太多，也重新自适应（降低阈值）
+                const offsetThresholdI = Math.max(stabilizedRangeI * 0.15, 0.05); // 15%或0.05V
+                const offsetThresholdQ = Math.max(stabilizedRangeQ * 0.15, 0.05); // 15%或0.05V
+                if (Math.abs(currentMinI - this.adaptiveLastMinI) > offsetThresholdI ||
+                    Math.abs(currentMaxI - this.adaptiveLastMaxI) > offsetThresholdI ||
+                    Math.abs(currentMinQ - this.adaptiveLastMinQ) > offsetThresholdQ ||
+                    Math.abs(currentMaxQ - this.adaptiveLastMaxQ) > offsetThresholdQ) {
+                    rangeChanged = true;
+                    console.log(`🔄 检测到信号偏移变化: I(${this.adaptiveLastMinI.toFixed(3)}-${this.adaptiveLastMaxI.toFixed(3)} → ${currentMinI.toFixed(3)}-${currentMaxI.toFixed(3)}), Q(${this.adaptiveLastMinQ.toFixed(3)}-${this.adaptiveLastMaxQ.toFixed(3)} → ${currentMinQ.toFixed(3)}-${currentMaxQ.toFixed(3)})`);
+                }
+
+                // 检测信号是否完全超出当前显示范围（需要立即响应）
+                const currentChartMinI = this.bleCharts.iSignal?.options.scales.y.min || 0;
+                const currentChartMaxI = this.bleCharts.iSignal?.options.scales.y.max || 4;
+                const currentChartMinQ = this.bleCharts.qSignal?.options.scales.y.min || 0;
+                const currentChartMaxQ = this.bleCharts.qSignal?.options.scales.y.max || 4;
+
+                if (currentMinI < currentChartMinI || currentMaxI > currentChartMaxI ||
+                    currentMinQ < currentChartMinQ || currentMaxQ > currentChartMaxQ) {
+                    rangeChanged = true;
+                    console.log('🔄 检测到信号超出当前显示范围，立即重新自适应');
+                }
             }
-            console.log(`  IMU: X=${this.bleBufferIMU_X.length}, Y=${this.bleBufferIMU_Y.length}, Z=${this.bleBufferIMU_Z.length}`);
+
+            // 如果检测到范围变化，重置自适应状态
+            if (rangeChanged) {
+                this.adaptiveSampleCount = 0;
+                this.adaptiveLastMinI = Infinity;
+                this.adaptiveLastMaxI = -Infinity;
+                this.adaptiveLastMinQ = Infinity;
+                this.adaptiveLastMaxQ = -Infinity;
+                this.adaptiveStabilized = false;
+
+                // 重置图表到初始范围
+                if (this.bleCharts.iSignal) {
+                    this.bleCharts.iSignal.options.scales.y.min = 0;
+                    this.bleCharts.iSignal.options.scales.y.max = 4.0;
+                }
+                if (this.bleCharts.qSignal) {
+                    this.bleCharts.qSignal.options.scales.y.min = 0;
+                    this.bleCharts.qSignal.options.scales.y.max = 4.0;
+                }
+                console.log('🔄 自适应Y轴已重置，重新开始调节');
+            }
+
+            // 如果还没稳定，更新范围
+            if (!this.adaptiveStabilized) {
+                this.adaptiveLastMinI = Math.min(this.adaptiveLastMinI, currentMinI);
+                this.adaptiveLastMaxI = Math.max(this.adaptiveLastMaxI, currentMaxI);
+                this.adaptiveLastMinQ = Math.min(this.adaptiveLastMinQ, currentMinQ);
+                this.adaptiveLastMaxQ = Math.max(this.adaptiveLastMaxQ, currentMaxQ);
+
+                // 检查是否达到稳定阈值
+                if (this.adaptiveSampleCount >= this.adaptiveStabilizeThreshold) {
+                    // 全程自适应：稳定后设置极紧凑范围以显示微小细节
+                    const rangeI = this.adaptiveLastMaxI - this.adaptiveLastMinI;
+                    const rangeQ = this.adaptiveLastMaxQ - this.adaptiveLastMinQ;
+
+                    // 简化波动性评估：使用数据范围的简单比例来代替复杂标准差计算
+                    const dataRangeI = this.adaptiveLastMaxI - this.adaptiveLastMinI;
+                    const dataRangeQ = this.adaptiveLastMaxQ - this.adaptiveLastMinQ;
+
+                    // 使用数据范围的10%作为波动性估计（简化计算）
+                    const stdI = dataRangeI * 0.1;
+                    const stdQ = dataRangeQ * 0.1;
+
+                    // 自适应完成后，设置极紧凑的范围来显示微小变动
+                    // 使用标准差的3倍作为余量，但最大不超过数据范围的5%，最小0.01V
+                    const detailPaddingI = Math.max(0.01, Math.min(stdI * 3, rangeI * 0.05));
+                    const detailPaddingQ = Math.max(0.01, Math.min(stdQ * 3, rangeQ * 0.05));
+
+                    // 设置极紧凑的范围：数据范围 ± 很小的余量
+                    const newMinI = Math.max(0, this.adaptiveLastMinI - detailPaddingI);
+                    const newMaxI = this.adaptiveLastMaxI + detailPaddingI;
+                    const newMinQ = Math.max(0, this.adaptiveLastMinQ - detailPaddingQ);
+                    const newMaxQ = this.adaptiveLastMaxQ + detailPaddingQ;
+
+                    // 更新I通道Y轴
+                    if (this.bleCharts.iSignal) {
+                        this.bleCharts.iSignal.options.scales.y.min = newMinI;
+                        this.bleCharts.iSignal.options.scales.y.max = newMaxI;
+                        console.log(`📊 自适应Y轴: I通道范围调整为 ${newMinI.toFixed(3)}-${newMaxI.toFixed(3)}V (标准差:${stdI.toFixed(4)}V, 余量:${paddingI.toFixed(3)}V)`);
+                    }
+
+                    // 更新Q通道Y轴
+                    if (this.bleCharts.qSignal) {
+                        this.bleCharts.qSignal.options.scales.y.min = newMinQ;
+                        this.bleCharts.qSignal.options.scales.y.max = newMaxQ;
+                        console.log(`📊 自适应Y轴: Q通道范围调整为 ${newMinQ.toFixed(3)}-${newMaxQ.toFixed(3)}V (标准差:${stdQ.toFixed(4)}V, 余量:${paddingQ.toFixed(3)}V)`);
+                    }
+
+                    this.adaptiveStabilized = true;
+                    console.log('✅ Y轴自适应调节完成，开始显示细节');
+                }
+            }
+        }
+
+        // 🔍 调试：降低日志频率以提高性能
+        if (this.bleDataCount <= 100 && this.bleDataCount % 100 === 0) { // 从50改为100
+            console.log(`📊 Buffer统计 (总点数=${len}): I=${Math.min(...this.bleBufferI).toFixed(3)}-${Math.max(...this.bleBufferI).toFixed(3)}V`);
         }
 
         const sampleSize = Math.min(1000, len);
@@ -3019,19 +3230,9 @@ class RadarWebApp {
         const iDataForChart = this.bleBufferI.slice(start);
         const qDataForChart = this.bleBufferQ.slice(start);
 
+        // 减少调试日志以提高性能
         if (this.bleDataCount === 10) {
-            console.log(`\n🎨 图表数据检查 (首次更新):`);
-            console.log(`  start=${start}, sampleSize=${sampleSize}`);
-            console.log(`  I数据长度=${iDataForChart.length}, 前5个:`, iDataForChart.slice(0, 5).map(v => v?.toFixed(4)));
-            console.log(`  Q数据长度=${qDataForChart.length}, 前5个:`, qDataForChart.slice(0, 5).map(v => v?.toFixed(4)));
-            console.log(`  Q数据包含0的数量: ${qDataForChart.filter(v => v === 0).length}`);
-            console.log(`  图表对象状态:`, {
-                iSignal: !!this.bleCharts.iSignal,
-                qSignal: !!this.bleCharts.qSignal,
-                constellation: !!this.bleCharts.constellation,
-                imu: !!this.bleCharts.imu,
-                temperature: !!this.bleCharts.temperature
-            });
+            console.log(`🎨 图表初始化完成 - 数据长度:${iDataForChart.length}`);
         }
 
         // 更新 I 通道
@@ -3042,12 +3243,7 @@ class RadarWebApp {
                     { label: 'I通道', data: iDataForChart, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1, pointRadius: 0 }
                 ]
             };
-            this.bleCharts.iSignal.update();
-            if (this.bleDataCount === 10) {
-                console.log('✅ I通道图表已更新');
-            }
-        } else {
-            console.warn('❌ I通道图表对象不存在');
+            this.bleCharts.iSignal.update('none');
         }
 
         // 更新 Q 通道
@@ -3058,12 +3254,7 @@ class RadarWebApp {
                     { label: 'Q通道', data: qDataForChart, borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1, pointRadius: 0 }
                 ]
             };
-            this.bleCharts.qSignal.update();
-            if (this.bleDataCount === 10) {
-                console.log('✅ Q通道图表已更新');
-            }
-        } else {
-            console.warn('❌ Q通道图表对象不存在');
+            this.bleCharts.qSignal.update('none');
         }
 
         const constellationSampleSize = Math.min(500, len);
@@ -3083,6 +3274,9 @@ class RadarWebApp {
 
         // 更新 IMU 图表（gx/gy/gz）
         if (this.bleCharts.imu && this.bleBufferIMU_X.length > 0) {
+            if (this.bleDataCount === 10) {
+                console.log(`🎯 IMU更新条件满足: 图表存在=${!!this.bleCharts.imu}, IMU_X长度=${this.bleBufferIMU_X.length}`);
+            }
             this.bleCharts.imu.data = {
                 labels: indices,
                 datasets: [
@@ -3136,6 +3330,88 @@ class RadarWebApp {
                 avgTempEl.textContent = `${currentTemp.toFixed(1)} °C`;
             }
         }
+    }
+
+    /**
+     * 重置自适应Y轴状态（手动重置为初始范围）
+     */
+    resetAdaptiveYAxis() {
+        console.log('🔄 重置自适应Y轴状态...');
+
+        // 重置状态变量
+        this.adaptiveSampleCount = 0;
+        this.adaptiveLastMinI = Infinity;
+        this.adaptiveLastMaxI = -Infinity;
+        this.adaptiveLastMinQ = Infinity;
+        this.adaptiveLastMaxQ = -Infinity;
+        this.adaptiveStabilized = false;
+
+        // 重置图表Y轴到初始范围
+        if (this.bleCharts.iSignal) {
+            this.bleCharts.iSignal.options.scales.y.min = 0;
+            this.bleCharts.iSignal.options.scales.y.max = 4.0;
+            this.bleCharts.iSignal.update();
+        }
+        if (this.bleCharts.qSignal) {
+            this.bleCharts.qSignal.options.scales.y.min = 0;
+            this.bleCharts.qSignal.options.scales.y.max = 4.0;
+            this.bleCharts.qSignal.update();
+        }
+
+        console.log('✅ 自适应Y轴已重置为初始范围 (0-4.0V)');
+    }
+
+    /**
+     * 强制切换到细节显示模式（极紧凑的Y轴范围）
+     */
+    forceDetailMode() {
+        if (this.bleBufferI.length < 50) {
+            console.warn('❌ 数据点不足，无法切换到细节模式');
+            return;
+        }
+
+        console.log('🔍 强制切换到细节显示模式...');
+
+        // 使用最近50个数据点计算极紧凑的范围
+        const detailDataSize = Math.min(this.bleBufferI.length, 50);
+        const startIdx = this.bleBufferI.length - detailDataSize;
+        const detailI = this.bleBufferI.slice(startIdx);
+        const detailQ = this.bleBufferQ.slice(startIdx);
+
+        const minI = Math.min(...detailI);
+        const maxI = Math.max(...detailI);
+        const minQ = Math.min(...detailQ);
+        const maxQ = Math.max(...detailQ);
+
+        const rangeI = maxI - minI;
+        const rangeQ = maxQ - minQ;
+
+        // 设置极小的余量：0.02V或数据范围的2%
+        const detailPadding = 0.02;
+        const rangePaddingI = Math.max(detailPadding, rangeI * 0.02);
+        const rangePaddingQ = Math.max(detailPadding, rangeQ * 0.02);
+
+        const detailMinI = Math.max(0, minI - rangePaddingI);
+        const detailMaxI = maxI + rangePaddingI;
+        const detailMinQ = Math.max(0, minQ - rangePaddingQ);
+        const detailMaxQ = maxQ + rangePaddingQ;
+
+        // 更新图表
+        if (this.bleCharts.iSignal) {
+            this.bleCharts.iSignal.options.scales.y.min = detailMinI;
+            this.bleCharts.iSignal.options.scales.y.max = detailMaxI;
+            this.bleCharts.iSignal.update();
+        }
+        if (this.bleCharts.qSignal) {
+            this.bleCharts.qSignal.options.scales.y.min = detailMinQ;
+            this.bleCharts.qSignal.options.scales.y.max = detailMaxQ;
+            this.bleCharts.qSignal.update();
+        }
+
+        // 重置自适应状态，防止自动调节覆盖手动设置
+        this.adaptiveStabilized = false;
+
+        console.log(`🎯 细节模式已激活: I(${detailMinI.toFixed(4)}-${detailMaxI.toFixed(4)}V), Q(${detailMinQ.toFixed(4)}-${detailMaxQ.toFixed(4)}V)`);
     }
 
     /**

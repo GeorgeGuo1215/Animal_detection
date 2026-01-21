@@ -635,6 +635,8 @@
                         <button class="btn btn-warning" onclick="clearBluetoothData()">清空数据</button>
                         <button class="btn btn-info" onclick="saveBluetoothData()">保存数据</button>
                         <button class="btn btn-purple" onclick="if(app) app.forceReinitializeCharts();">重新初始化图表</button>
+                        <button class="btn btn-info" onclick="if(app) app.resetAdaptiveYAxis();">重置自适应Y轴</button>
+                        <button class="btn btn-success" onclick="if(app) app.forceDetailMode();">强制细节模式</button>
                         <button class="btn btn-secondary" onclick="hideBluetoothCharts()">隐藏图表</button>
                     </div>
                 </div>
@@ -854,6 +856,6 @@
     <script src="radar-processor.js?v=20260113-4"></script>
     <script src="azure-gpt.js?v=20260113-3"></script>
     <script src="resting-monitor.js?v=20260113-3"></script>
-    <script src="app.js?v=20260113-6"></script>
+    <script src="app.js?v=20260113-16"></script>
 </body>
 </html>

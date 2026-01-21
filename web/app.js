@@ -1140,10 +1140,42 @@ class RadarWebApp {
         };
 
         // 初始化蓝牙专用图表
-        this.bleCharts.iq = new Chart(document.getElementById('bleIQChart'), {
+        // I 通道
+        this.bleCharts.iSignal = new Chart(document.getElementById('bleISignalChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I/Q 实时信号' } } }
+            options: { 
+                ...chartOptions, 
+                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I 通道实时信号' } },
+                scales: {
+                    x: { display: true, title: { display: true, text: '采样点' } },
+                    y: { 
+                        display: true, 
+                        title: { display: true, text: '幅度 (V)' },
+                        min: 0, 
+                        max: 3.5 // 固定范围 0-3.5V
+                    }
+                }
+            }
+        });
+
+        // Q 通道
+        this.bleCharts.qSignal = new Chart(document.getElementById('bleQSignalChart'), {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: { 
+                ...chartOptions, 
+                plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 Q 通道实时信号' } },
+                scales: {
+                    x: { display: true, title: { display: true, text: '采样点' } },
+                    y: { 
+                        display: true, 
+                        title: { display: true, text: '幅度 (V)' },
+                        min: 0, 
+                        max: 3.5 // 固定范围 0-3.5V
+                    }
+                }
+            }
         });
 
         this.bleCharts.constellation = new Chart(document.getElementById('bleConstellationChart'), {
@@ -1279,10 +1311,40 @@ class RadarWebApp {
         };
 
         // 初始化所有图表
-        this.charts.iq = new Chart(document.getElementById('iqChart'), {
+        // I 通道图表
+        this.charts.iSignal = new Chart(document.getElementById('iSignalChart'), {
             type: 'line',
             data: { labels: [], datasets: [] },
-            options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: '原始I/Q信号' } } }
+            options: { 
+                ...chartOptions, 
+                plugins: { ...chartOptions.plugins, title: { display: true, text: 'I 通道信号' } },
+                scales: {
+                    x: { display: true, title: { display: true, text: '采样点' } },
+                    y: { 
+                        display: true, 
+                        title: { display: true, text: '幅度' },
+                        // min: 0, max: 3.5 // 文件模式下可能不需要严格固定，或者根据实际数据范围
+                    }
+                }
+            }
+        });
+
+        // Q 通道图表
+        this.charts.qSignal = new Chart(document.getElementById('qSignalChart'), {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: { 
+                ...chartOptions, 
+                plugins: { ...chartOptions.plugins, title: { display: true, text: 'Q 通道信号' } },
+                scales: {
+                    x: { display: true, title: { display: true, text: '采样点' } },
+                    y: { 
+                        display: true, 
+                        title: { display: true, text: '幅度' },
+                        // min: 0, max: 3.5
+                    }
+                }
+            }
         });
 
         this.charts.constellation = new Chart(document.getElementById('constellationChart'), {
@@ -1378,26 +1440,33 @@ class RadarWebApp {
         const sampleSize = Math.min(1000, firstResult.iData.length);
         const indices = Array.from({length: sampleSize}, (_, i) => i);
         
-        this.charts.iq.data = {
+        // 更新 I 通道
+        this.charts.iSignal.data = {
             labels: indices,
-            datasets: [
-                {
-                    label: 'I通道',
-                    data: Array.from(firstResult.iData.slice(0, sampleSize)),
-                    borderColor: 'rgb(75, 192, 192)',
-                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                    tension: 0.1
-                },
-                {
-                    label: 'Q通道',
-                    data: Array.from(firstResult.qData.slice(0, sampleSize)),
-                    borderColor: 'rgb(255, 99, 132)',
-                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                    tension: 0.1
-                }
-            ]
+            datasets: [{
+                label: 'I通道',
+                data: Array.from(firstResult.iData.slice(0, sampleSize)),
+                borderColor: 'rgb(75, 192, 192)',
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                tension: 0.1,
+                pointRadius: 0
+            }]
         };
-        this.charts.iq.update();
+        this.charts.iSignal.update();
+
+        // 更新 Q 通道
+        this.charts.qSignal.data = {
+            labels: indices,
+            datasets: [{
+                label: 'Q通道',
+                data: Array.from(firstResult.qData.slice(0, sampleSize)),
+                borderColor: 'rgb(255, 99, 132)',
+                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                tension: 0.1,
+                pointRadius: 0
+            }]
+        };
+        this.charts.qSignal.update();
 
         // 更新星座图
         const constellationSampleSize = Math.min(500, firstResult.iData.length);
@@ -2065,14 +2134,27 @@ class RadarWebApp {
             console.log(`  Q数据包含0的数量: ${qDataForChart.filter(v => v === 0).length}`);
         }
 
-        this.bleCharts.iq.data = {
-            labels: indices,
-            datasets: [
-                { label: 'I通道', data: iDataForChart, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1 },
-                { label: 'Q通道', data: qDataForChart, borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1 }
-            ]
-        };
-        this.bleCharts.iq.update();  // 移除 'none'，让图表真正刷新
+        // 更新 I 通道
+        if (this.bleCharts.iSignal) {
+            this.bleCharts.iSignal.data = {
+                labels: indices,
+                datasets: [
+                    { label: 'I通道', data: iDataForChart, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1, pointRadius: 0 }
+                ]
+            };
+            this.bleCharts.iSignal.update('none');
+        }
+
+        // 更新 Q 通道
+        if (this.bleCharts.qSignal) {
+            this.bleCharts.qSignal.data = {
+                labels: indices,
+                datasets: [
+                    { label: 'Q通道', data: qDataForChart, borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1, pointRadius: 0 }
+                ]
+            };
+            this.bleCharts.qSignal.update('none');
+        }
 
         const constellationSampleSize = Math.min(500, len);
         const step = Math.max(1, Math.floor(len / constellationSampleSize));
@@ -2576,6 +2658,22 @@ function startSimulationTest() {
     
     // 显示实时数据区域
     document.getElementById('bleRealTimeData').style.display = 'block';
+    
+    // 自动展开图表区域并刷新（确保图表可见且尺寸正确）
+    const chartsSection = document.getElementById('bluetoothChartsSection');
+    if (chartsSection) {
+        chartsSection.style.display = 'block';
+        chartsSection.scrollIntoView({ behavior: 'smooth' });
+    }
+    // 延迟触发布局更新，确保Canvas尺寸正确
+    setTimeout(() => {
+        if (app.bleCharts) {
+            Object.values(app.bleCharts).forEach(chart => {
+                if (chart && typeof chart.resize === 'function') chart.resize();
+            });
+        }
+    }, 100);
+
     app.updateBLEButtons();
     
     // 生成模拟数据 (模拟心率75bpm，呼吸18bpm)
@@ -2588,8 +2686,8 @@ function startSimulationTest() {
             return;
         }
         
-        const fs = 50;
-        const t = dataCount / fs; // 采样率50Hz
+        const fs = (app.processor && Number.isFinite(app.processor.fs)) ? app.processor.fs : 50;
+        const t = dataCount / fs;
         // 模拟信号: 呼吸(0.3Hz=18bpm) + 心率(1.25Hz=75bpm) + 噪声
         const respiratorySignal = 0.5 * Math.sin(2 * Math.PI * 0.3 * t);
         const heartSignal = 0.2 * Math.sin(2 * Math.PI * 1.25 * t);
@@ -2616,7 +2714,7 @@ function startSimulationTest() {
         dataCount++;
     }, 20); // 50Hz采样率 = 20ms间隔
 
-    app.addBLELog('📡 正在生成模拟心率75bpm、呼吸18bpm的数据（50Hz采样率）...');
+    app.addBLELog(`📡 正在生成模拟心率75bpm、呼吸18bpm的数据（${app.processor.fs}Hz采样率）...`);
 }
 
 // 停止模拟

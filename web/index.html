@@ -857,5 +857,58 @@
     <script src="azure-gpt.js?v=20260113-3"></script>
     <script src="resting-monitor.js?v=20260113-3"></script>
     <script src="app.js?v=20260113-16"></script>
+
+    <!-- BLE调试代码 -->
+    <script>
+        window.addEventListener('load', function() {
+            console.log('🔍 BLE调试信息:');
+            console.log('window.BLE存在:', typeof window.BLE);
+            if (window.BLE) {
+                console.log('BLE对象属性:', Object.keys(window.BLE));
+                console.log('BLE.connect方法:', typeof window.BLE.connect);
+            }
+
+            console.log('window.app存在:', typeof window.app);
+            if (window.app) {
+                console.log('app.processor存在:', typeof window.app.processor);
+                if (window.app.processor) {
+                    console.log('processor.fs:', window.app.processor.fs);
+                }
+            }
+
+            // 测试BLE连接按钮
+            const bleBtn = document.getElementById('bleConnectBtn');
+            if (bleBtn) {
+                console.log('BLE连接按钮找到:', bleBtn);
+                console.log('按钮onclick属性:', bleBtn.getAttribute('onclick'));
+                console.log('按钮onclick函数:', bleBtn.onclick);
+                console.log('bleConnect函数存在:', typeof window.bleConnect);
+            } else {
+                console.error('BLE连接按钮未找到!');
+            }
+
+            // 测试手动调用
+            if (window.bleConnect) {
+                console.log('bleConnect函数可以调用');
+                // 如果BLE对象不存在，尝试重新创建
+                if (!window.BLE) {
+                    console.warn('BLE对象不存在，尝试重新创建...');
+                    try {
+                        // 重新执行bluetooth.js的内容
+                        const script = document.createElement('script');
+                        script.src = 'bluetooth.js?v=' + Date.now();
+                        document.head.appendChild(script);
+                        script.onload = function() {
+                            console.log('BLE对象重新创建完成:', typeof window.BLE);
+                        };
+                    } catch (e) {
+                        console.error('重新创建BLE失败:', e);
+                    }
+                }
+            } else {
+                console.error('bleConnect函数不存在!');
+            }
+        });
+    </script>
 </body>
 </html>

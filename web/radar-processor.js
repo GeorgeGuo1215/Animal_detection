@@ -295,9 +295,9 @@ class RadarDataProcessor {
     applyFilters(phaseData) {
         try {
             // 呼吸波形提取 (参考main.py第245-246行和第177-179行)
-            // 使用滑动平均滤波，类似于np_move_avg (窗口减半: 10→5, 5→3)
+            // 使用滑动平均滤波，第一次5，第二次2.5
             let respiratoryWave = this.movingAverage(Array.from(phaseData), 5);
-            respiratoryWave = this.movingAverage(respiratoryWave, 3);
+            respiratoryWave = this.movingAverage(respiratoryWave, 2.5);
             
             // 去除最小值，类似于main.py第179行
             const minVal = Math.min(...respiratoryWave);
@@ -661,9 +661,9 @@ class RadarDataProcessor {
             }
         }
 
-        // 呼吸波形（main.py 245-247 + 177-179，窗口减半）
+        // 呼吸波形（main.py 245-247 + 177-179，第一次5，第二次2.5）
         let respiratoryWave = this.movingAverage(Array.from(phase), 5);
-        respiratoryWave = this.movingAverage(respiratoryWave, 3);
+        respiratoryWave = this.movingAverage(respiratoryWave, 2.5);
         const minResp = Math.min(...respiratoryWave);
         respiratoryWave = respiratoryWave.map(v => v - minResp);
 
@@ -672,7 +672,7 @@ class RadarDataProcessor {
         heartbeatWave = this.convolve(heartbeatWave, this.HPF_short_5_par);
 
         // 频谱法（main.py 213-223：对相位差分做滑动平均 -> FFT）
-        const moveStep = 5;
+        const moveStep = 2.5;
         const diffPhase = new Float64Array(dataLength);
         for (let i = 1; i < dataLength; i++) diffPhase[i] = phase[i] - phase[i-1];
         let dispShort = this.movingAverage(Array.from(diffPhase), moveStep);

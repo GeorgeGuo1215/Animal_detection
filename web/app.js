@@ -4,10 +4,8 @@
 
 class RadarWebApp {
     constructor() {
-        // 采样率以右侧面板为准；修改为 50Hz
-        const srEl = document.getElementById('samplingRate');
-        const sr = srEl ? parseInt(srEl.value, 10) : NaN;
-        const samplingRate = Number.isFinite(sr) && sr > 0 ? sr : 50;
+        // 采样率固定为50Hz，与串口接收频率一致
+        const samplingRate = 50;
         this.processor = new RadarDataProcessor(samplingRate);
         this.selectedFiles = [];
         this.processedResults = [];
@@ -22,7 +20,7 @@ class RadarWebApp {
         // 自适应Y轴相关属性
         this.adaptiveYAxisEnabled = true; // 启用自适应Y轴以放大显示微小变化
         this.adaptiveSampleCount = 0; // 已收集的样本数量
-        this.adaptiveStabilizeThreshold = 100; // 稳定前需要的样本数
+        this.adaptiveStabilizeThreshold = 30; // 稳定前需要的样本数（降低阈值以更快响应）
         this.adaptiveStabilizeWindow = 50; // 检测稳定的窗口大小
         this.adaptiveLastMinI = Infinity;
         this.adaptiveLastMaxI = -Infinity;
@@ -47,10 +45,11 @@ class RadarWebApp {
         this._simInterval = null;
 
         // ===== 心率稳定机制（参考main.py第48-51行）=====
-        this.heartRateHistory = [];  // 心率历史记录
-        this.respiratoryHistory = []; // 呼吸频率历史记录
-        this.historyMaxLength = 30;  // 保留最近30次的结果（约30秒）
-        this.heartRateDelta = 10;    // 心率最大变化幅度（bpm）参考main.py第51行
+        this.heartRateHistory = new Array(200).fill(70);  // 固定200个心率历史记录，与Python端一致
+        this.respiratoryHistory = new Array(200).fill(18); // 固定200个呼吸频率历史记录
+        this.historyIndex = 0;  // 循环数组索引
+        this.historyMaxLength = 200;  // 固定200个历史值
+        this.heartRateDelta = 5;    // 心率最大变化幅度（bpm）参考main.py第51行
         this.lastStableHeartRate = 70; // 上次稳定的心率
         this.lastStableRespRate = 18;  // 上次稳定的呼吸频率
 
@@ -86,7 +85,8 @@ class RadarWebApp {
         
         // 实时保存相关 (参考main.py)
         this.bleRecordingFlag = 0;  // 0: 不记录, 1: 记录中
-        this.bleRecordingData = []; // 记录的数据缓存
+        this.bleRecordingData = []; // 记录的处理后数据缓存
+        this.bleRecordingRawData = []; // 记录的原始蓝牙数据缓存
         this.bleRecordingStartTime = null;
 
         // ===== BLE 上报到 Integration =====
@@ -639,6 +639,11 @@ class RadarWebApp {
      * 默认逐行格式: ts i q
      */
     handleBLELine(line) {
+        // 保存原始蓝牙数据（如果正在录制）
+        if (this.bleRecordingFlag === 1) {
+            this.bleRecordingRawData.push(line);
+        }
+
         // 打印原始数据
         this.printRawData(line);
         this.lastBleRxTs = Date.now();
@@ -646,6 +651,8 @@ class RadarWebApp {
         let ts, iVal, qVal;
         let imuX = 0, imuY = 0, imuZ = 0; // gx/gy/gz（优先取 Gyr:）
         let temperature = null; // 温度数据
+        let adcI = 0, adcQ = 0; // ADC原始值
+        let accX = 0, accY = 0, accZ = 0; // Acc原始值
         try {
             const trimmed = line.trim();
             const floatRe = /[+-]?(?:\d+\.\d+|\d+|\.\d+)(?:[eE][+-]?\d+)?/g;
@@ -706,6 +713,10 @@ class RadarWebApp {
             // 先尝试解析 ADC（I/Q通道）
             const adc = parsePairAfterLabel('ADC:') || parsePairAfterLabel('adc:');
             if (adc) {
+                // 保存原始ADC值
+                adcI = adc[0];
+                adcQ = adc[1];
+
                 // ADC 转换公式（与 main.py 第413行一致）：
                 // voltage = ((adc_value / 32767) + 1) * 3.3 / 2
                 // 这将 -32768~32767 的整数转换为 0~3.3V 的电压
@@ -728,6 +739,14 @@ class RadarWebApp {
             // 解析 IMU 数据（优先陀螺仪）
             const gyr = parseTripletAfterLabel('Gyr:') || parseTripletAfterLabel('GYR:') || parseTripletAfterLabel('GYR_');
             const acc = parseTripletAfterLabel('Acc:') || parseTripletAfterLabel('ACC:');
+
+            // 保存原始Acc值（无论是否用作IMU）
+            if (acc) {
+                accX = acc[0];
+                accY = acc[1];
+                accZ = acc[2];
+            }
+
             if (gyr) [imuX, imuY, imuZ] = gyr;
             else if (acc) [imuX, imuY, imuZ] = acc;
 
@@ -851,14 +870,53 @@ class RadarWebApp {
         this.bleBufferIMU_Y.push(Number.isFinite(imuY) ? imuY : 0);
         this.bleBufferIMU_Z.push(Number.isFinite(imuZ) ? imuZ : 0);
         
-        // 温度数据，保持同步（如果没有温度数据，使用上一次的值或默认25°C）
-        const lastTemp = this.bleBufferTemperature.length > 0 ? this.bleBufferTemperature[this.bleBufferTemperature.length - 1] : 25;
-        this.bleBufferTemperature.push(Number.isFinite(temperature) ? temperature : lastTemp);
+        // 温度数据：只有当设备发送了温度数据时才更新，否则使用null表示无数据
+        if (temperature !== null && Number.isFinite(temperature)) {
+            this.bleBufferTemperature.push(temperature);
+        } else {
+            // 如果没有温度数据，仍然保持数组长度同步，填充null
+            this.bleBufferTemperature.push(null);
+        }
         
-        // 实时保存数据 (参考main.py的记录逻辑)
+        // 实时保存完整的原始蓝牙数据
         if (this.bleRecordingFlag === 1) {
             const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-            const dataLine = `${timestamp}  ${iVal}  ${qVal}`;
+
+            // 保存完整的蓝牙原始数据：时间戳、ADC、Acc、I、Q、IMU(x,y,z)、温度
+            // 格式：timestamp ADC_I ADC_Q Acc_X Acc_Y Acc_Z I_voltage Q_voltage IMU_x IMU_y IMU_z temperature
+            const imuX = this.bleBufferIMU_X[this.bleBufferIMU_X.length - 1] || 0;
+            const imuY = this.bleBufferIMU_Y[this.bleBufferIMU_Y.length - 1] || 0;
+            const imuZ = this.bleBufferIMU_Z[this.bleBufferIMU_Z.length - 1] || 0;
+            const temp = this.bleBufferTemperature[this.bleBufferTemperature.length - 1];
+
+            // 需要从原始字符串中提取ADC和Acc的值
+            // 这里我们需要在handleBLELine函数中保存这些值，或者重新解析
+            // 为了简单，我们可以从当前处理的变量中获取（如果可用的话）
+
+            // 临时解决方案：如果能从当前上下文中获取ADC和Acc值就保存，否则用默认值
+            let adcI = 0, adcQ = 0, accX = 0, accY = 0, accZ = 0;
+
+            // 尝试从原始字符串重新解析ADC和Acc（简化版本）
+            try {
+                const trimmed = line.trim();
+                const adcMatch = trimmed.match(/ADC:([-\d]+)\s+([-\d]+)/);
+                if (adcMatch) {
+                    adcI = parseInt(adcMatch[1]);
+                    adcQ = parseInt(adcMatch[2]);
+                }
+
+                const accMatch = trimmed.match(/Acc:([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                if (accMatch) {
+                    accX = parseFloat(accMatch[1]);
+                    accY = parseFloat(accMatch[2]);
+                    accZ = parseFloat(accMatch[3]);
+                }
+            } catch (e) {
+                // 解析失败时使用默认值
+                console.warn('解析ADC/Acc失败，使用默认值');
+            }
+
+            const dataLine = `${timestamp}  ${adcI}  ${adcQ}  ${accX.toFixed(3)}  ${accY.toFixed(3)}  ${accZ.toFixed(3)}  ${iVal.toFixed(6)}  ${qVal.toFixed(6)}  ${imuX.toFixed(3)}  ${imuY.toFixed(3)}  ${imuZ.toFixed(3)}  ${temp !== null ? temp.toFixed(2) : 'N/A'}`;
             this.bleRecordingData.push(dataLine);
         }
         
@@ -1812,8 +1870,8 @@ class RadarWebApp {
                     y: {
                         display: true,
                         title: { display: true, text: '幅度 (V)' },
-                        min: 1.5,    // 进一步放大，聚焦2.0-2.5V的微小变化
-                        max: 2.5,    // 极小范围以最大化显示细节
+                        min: 1.2,    // 扩大初始范围，更清楚显示波峰变化
+                        max: 2.8,    // 适度范围以突出波峰细节
                         beginAtZero: false
                     }
                 }
@@ -1832,8 +1890,8 @@ class RadarWebApp {
                     y: {
                         display: true,
                         title: { display: true, text: '幅度 (V)' },
-                        min: 1.5,    // 进一步放大，聚焦2.0-2.5V的微小变化
-                        max: 2.5,    // 极小范围以最大化显示细节
+                        min: 1.2,    // 扩大初始范围，更清楚显示波峰变化
+                        max: 2.8,    // 适度范围以突出波峰细节
                         beginAtZero: false
                     }
                 }
@@ -2918,12 +2976,14 @@ class RadarWebApp {
         // 重置录制相关数据
         this.bleRecordingFlag = 0;
         this.bleRecordingData = [];
+        this.bleRecordingRawData = [];
         this.bleRecordingStartTime = null;
         this._bleWindowHistory = [];
         
-        // 重置心率平滑历史
-        this.heartRateHistory = [];
-        this.respiratoryHistory = [];
+        // 重置心率平滑历史（循环数组）
+        this.heartRateHistory.fill(70);
+        this.respiratoryHistory.fill(18);
+        this.historyIndex = 0;
         this.lastStableHeartRate = 70;
         this.lastStableRespRate = 18;
 
@@ -3011,20 +3071,44 @@ class RadarWebApp {
         if (this.bleRecordingFlag === 1) {
             // 开始录制
             this.bleRecordingData = [];
+            this.bleRecordingRawData = [];
             this.bleRecordingStartTime = new Date();
-            
+
             // 生成录制文件名 (参考main.py的命名规则)
             const timestamp = this.bleRecordingStartTime.toISOString()
                 .slice(0, 16).replace('T', '-').replace(/:/g, '-');
-            
+
+            // 记录开始时的心率和呼吸率
+            const currentHR = this.currentHeartRate || 0;
+            const currentRR = this.currentRespiratoryRate || 0;
+            const startTimestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+            // 在录制数据开头添加元数据信息
+            this.bleRecordingData.push(`# 录制开始时间: ${startTimestamp}`);
+            this.bleRecordingData.push(`# 开始时心率: ${currentHR} bpm, 呼吸率: ${currentRR} bpm`);
+            this.bleRecordingData.push(`# 数据格式: timestamp ADC_I ADC_Q Acc_X Acc_Y Acc_Z I_voltage Q_voltage IMU_x IMU_y IMU_z temperature`);
+            this.bleRecordingData.push(`# 原始数据开始`);
+
             this.addBLELog(`🔴 开始录制数据 - ${timestamp}`);
-            this.addBLELog('📝 实时保存到内存，结束时将下载文件');
+            this.addBLELog(`💓 开始时心率: ${currentHR} bpm, 呼吸率: ${currentRR} bpm`);
+            this.addBLELog('📝 实时保存到内存，结束时将下载处理后数据和原始数据文件');
             
         } else {
             // 结束录制并自动下载文件
             const recordingEndTime = new Date();
             const duration = ((recordingEndTime - this.bleRecordingStartTime) / 1000).toFixed(1);
-            
+
+            // 记录结束时的心率和呼吸率
+            const endHR = this.currentHeartRate || 0;
+            const endRR = this.currentRespiratoryRate || 0;
+            const endTimestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+            // 在录制数据末尾添加结束信息
+            this.bleRecordingData.push(`# 原始数据结束`);
+            this.bleRecordingData.push(`# 录制结束时间: ${endTimestamp}`);
+            this.bleRecordingData.push(`# 结束时心率: ${endHR} bpm, 呼吸率: ${endRR} bpm`);
+            this.bleRecordingData.push(`# 录制统计: 总时长 ${duration}秒, 数据点数 ${this.bleRecordingData.filter(line => !line.startsWith('#')).length}`);
+
             // 生成文件内容 (参考main.py的数据格式)
             let fileContent = '';
             for (const line of this.bleRecordingData) {
@@ -3036,22 +3120,41 @@ class RadarWebApp {
                 .slice(0, 16).replace('T', '-').replace(/:/g, '-');
             const filename = `bluetooth_record_${timestamp}.txt`;
             
-            // 自动下载文件
+            // 自动下载处理后数据文件
             this.downloadFile(fileContent, filename, 'text/plain');
-            
-            // 汇总本次录制的窗口HR/RR用于Azure（按更新周期采样记录）
-            const sessionStats = this._buildBluetoothSessionStats();
-            const statsJson = JSON.stringify(sessionStats);
+
+            // 生成并下载原始数据文件
+            const rawFileContent = this.bleRecordingRawData.join('\n');
+            const rawFilename = `bluetooth_raw_${timestamp}.txt`;
+            this.downloadFile(rawFileContent, rawFilename, 'text/plain');
+            this.addBLELog(`📄 已保存原始数据: ${rawFilename} (${this.bleRecordingRawData.length} 行)`);
+
+            // 保存简化的录制统计（只包含最终结果，不包含详细窗口数据）
+            const simplifiedStats = {
+                startTime: this.bleRecordingStartTime.toISOString(),
+                endTime: new Date().toISOString(),
+                durationSeconds: parseFloat(duration),
+                finalHeartRate: endHR,
+                finalRespiratoryRate: endRR,
+                dataPoints: this.bleRecordingData.filter(line => !line.startsWith('#')).length,
+                note: '心率呼吸率只保存显示的最终结果'
+            };
+            const statsJson = JSON.stringify(simplifiedStats, null, 2);
             const statsFilename = `bluetooth_record_${timestamp}_stats.json`;
             this.downloadFile(statsJson, statsFilename, 'application/json');
-            this.addBLELog(`📈 已保存本次窗口统计: ${statsFilename}`);
+            this.addBLELog(`📈 已保存录制统计: ${statsFilename}`);
 
             // 显示录制统计
             this.addBLELog(`🟢 录制结束 - 时长: ${duration}秒`);
-            this.addBLELog(`💾 已保存: ${filename} (${this.bleRecordingData.length} 数据点)`);
+            this.addBLELog(`💓 结束时心率: ${endHR} bpm, 呼吸率: ${endRR} bpm`);
+            // 计算实际数据点数（排除注释行）
+            const dataPointCount = this.bleRecordingData.filter(line => !line.startsWith('#')).length;
+            this.addBLELog(`💾 已保存处理后数据: ${filename} (${dataPointCount} 数据点 + 元数据)`);
+            this.addBLELog(`📂 总共下载3个文件: 处理后数据、原始数据、统计信息`);
             
             // 清空录制缓存
             this.bleRecordingData = [];
+            this.bleRecordingRawData = [];
             this.bleRecordingStartTime = null;
         }
         
@@ -3089,8 +3192,8 @@ class RadarWebApp {
         const len = this.bleBufferI.length;
         if (len < 10) return;
 
-        // 自适应Y轴调节逻辑（性能优化：降低计算频率）
-        if (this.adaptiveYAxisEnabled && this.bleDataCount % 5 === 0) { // 每5个数据点计算一次
+        // 自适应Y轴调节逻辑（提高实时性：增加检测频率）
+        if (this.adaptiveYAxisEnabled && this.bleDataCount % 2 === 0) { // 每2个数据点计算一次，提高响应速度
             this.adaptiveSampleCount++;
 
             // 收集最近数据的范围
@@ -3112,23 +3215,50 @@ class RadarWebApp {
                 const stabilizedRangeI = this.adaptiveLastMaxI - this.adaptiveLastMinI;
                 const stabilizedRangeQ = this.adaptiveLastMaxQ - this.adaptiveLastMinQ;
 
-                // 如果当前范围与稳定范围差异超过20%（降低阈值，提高敏感度）
-                const rangeChangeThreshold = 0.2;
-                if (Math.abs(currentRangeI - stabilizedRangeI) / Math.max(stabilizedRangeI, 0.01) > rangeChangeThreshold ||
-                    Math.abs(currentRangeQ - stabilizedRangeQ) / Math.max(stabilizedRangeQ, 0.01) > rangeChangeThreshold) {
-                    rangeChanged = true;
-                    console.log(`🔄 检测到信号范围变化: I(${stabilizedRangeI.toFixed(3)}→${currentRangeI.toFixed(3)}), Q(${stabilizedRangeQ.toFixed(3)}→${currentRangeQ.toFixed(3)})`);
-                }
+                // 检查是否处于微小波动状态（Y轴范围≤0.1）
+                const isMicroFluctuationMode = (
+                    this.bleCharts.iSignal && this.bleCharts.qSignal &&
+                    (this.bleCharts.iSignal.options.scales.y.max - this.bleCharts.iSignal.options.scales.y.min) <= 0.1 ||
+                    (this.bleCharts.qSignal.options.scales.y.max - this.bleCharts.qSignal.options.scales.y.min) <= 0.1
+                );
 
-                // 或者如果信号偏移太多，也重新自适应（降低阈值）
-                const offsetThresholdI = Math.max(stabilizedRangeI * 0.15, 0.05); // 15%或0.05V
-                const offsetThresholdQ = Math.max(stabilizedRangeQ * 0.15, 0.05); // 15%或0.05V
-                if (Math.abs(currentMinI - this.adaptiveLastMinI) > offsetThresholdI ||
-                    Math.abs(currentMaxI - this.adaptiveLastMaxI) > offsetThresholdI ||
-                    Math.abs(currentMinQ - this.adaptiveLastMinQ) > offsetThresholdQ ||
-                    Math.abs(currentMaxQ - this.adaptiveLastMaxQ) > offsetThresholdQ) {
-                    rangeChanged = true;
-                    console.log(`🔄 检测到信号偏移变化: I(${this.adaptiveLastMinI.toFixed(3)}-${this.adaptiveLastMaxI.toFixed(3)} → ${currentMinI.toFixed(3)}-${currentMaxI.toFixed(3)}), Q(${this.adaptiveLastMinQ.toFixed(3)}-${this.adaptiveLastMaxQ.toFixed(3)} → ${currentMinQ.toFixed(3)}-${currentMaxQ.toFixed(3)})`);
+                if (isMicroFluctuationMode) {
+                    // 微小波动模式下，提高重置阈值，避免频繁重置
+                    const rangeChangeThreshold = 1.0; // 从0.2提高到1.0，更宽容
+                    const offsetThresholdI = Math.max(stabilizedRangeI * 0.5, 0.1); // 从0.15提高到0.5，从0.05提高到0.1
+                    const offsetThresholdQ = Math.max(stabilizedRangeQ * 0.5, 0.1);
+
+                    if (Math.abs(currentRangeI - stabilizedRangeI) / Math.max(stabilizedRangeI, 0.01) > rangeChangeThreshold ||
+                        Math.abs(currentRangeQ - stabilizedRangeQ) / Math.max(stabilizedRangeQ, 0.01) > rangeChangeThreshold) {
+                        rangeChanged = true;
+                        console.log(`🔄 [微小模式]信号范围变化: I(${stabilizedRangeI.toFixed(4)}→${currentRangeI.toFixed(4)}), Q(${stabilizedRangeQ.toFixed(4)}→${currentRangeQ.toFixed(4)})`);
+                    }
+
+                    if (Math.abs(currentMinI - this.adaptiveLastMinI) > offsetThresholdI ||
+                        Math.abs(currentMaxI - this.adaptiveLastMaxI) > offsetThresholdI ||
+                        Math.abs(currentMinQ - this.adaptiveLastMinQ) > offsetThresholdQ ||
+                        Math.abs(currentMaxQ - this.adaptiveLastMaxQ) > offsetThresholdQ) {
+                        rangeChanged = true;
+                        console.log(`🔄 [微小模式]信号偏移变化: I(${this.adaptiveLastMinI.toFixed(4)}-${this.adaptiveLastMaxI.toFixed(4)} → ${currentMinI.toFixed(4)}-${currentMaxI.toFixed(4)}), Q(${this.adaptiveLastMinQ.toFixed(4)}-${this.adaptiveLastMaxQ.toFixed(4)} → ${currentMinQ.toFixed(4)}-${currentMaxQ.toFixed(4)})`);
+                    }
+                } else {
+                    // 正常模式下的重置逻辑（保持原有敏感度）
+                    const rangeChangeThreshold = 0.2;
+                    if (Math.abs(currentRangeI - stabilizedRangeI) / Math.max(stabilizedRangeI, 0.01) > rangeChangeThreshold ||
+                        Math.abs(currentRangeQ - stabilizedRangeQ) / Math.max(stabilizedRangeQ, 0.01) > rangeChangeThreshold) {
+                        rangeChanged = true;
+                        console.log(`🔄 检测到信号范围变化: I(${stabilizedRangeI.toFixed(3)}→${currentRangeI.toFixed(3)}), Q(${stabilizedRangeQ.toFixed(3)}→${currentRangeQ.toFixed(3)})`);
+                    }
+
+                    const offsetThresholdI = Math.max(stabilizedRangeI * 0.15, 0.05);
+                    const offsetThresholdQ = Math.max(stabilizedRangeQ * 0.15, 0.05);
+                    if (Math.abs(currentMinI - this.adaptiveLastMinI) > offsetThresholdI ||
+                        Math.abs(currentMaxI - this.adaptiveLastMaxI) > offsetThresholdI ||
+                        Math.abs(currentMinQ - this.adaptiveLastMinQ) > offsetThresholdQ ||
+                        Math.abs(currentMaxQ - this.adaptiveLastMaxQ) > offsetThresholdQ) {
+                        rangeChanged = true;
+                        console.log(`🔄 检测到信号偏移变化: I(${this.adaptiveLastMinI.toFixed(3)}-${this.adaptiveLastMaxI.toFixed(3)} → ${currentMinI.toFixed(3)}-${currentMaxI.toFixed(3)}), Q(${this.adaptiveLastMinQ.toFixed(3)}-${this.adaptiveLastMaxQ.toFixed(3)} → ${currentMinQ.toFixed(3)}-${currentMaxQ.toFixed(3)})`);
+                    }
                 }
 
                 // 检测信号是否完全超出当前显示范围（需要立即响应）
@@ -3153,14 +3283,28 @@ class RadarWebApp {
                 this.adaptiveLastMaxQ = -Infinity;
                 this.adaptiveStabilized = false;
 
-                // 重置图表到初始范围
-                if (this.bleCharts.iSignal) {
-                    this.bleCharts.iSignal.options.scales.y.min = 0;
-                    this.bleCharts.iSignal.options.scales.y.max = 4.0;
-                }
-                if (this.bleCharts.qSignal) {
-                    this.bleCharts.qSignal.options.scales.y.min = 0;
-                    this.bleCharts.qSignal.options.scales.y.max = 4.0;
+                // 重置图表范围：根据当前状态智能选择范围
+                if (this.bleCharts.iSignal && this.bleCharts.qSignal) {
+                    // 检查之前是否处于微小波动模式
+                    const wasMicroMode = (
+                        (this.bleCharts.iSignal.options.scales.y.max - this.bleCharts.iSignal.options.scales.y.min) <= 0.1 ||
+                        (this.bleCharts.qSignal.options.scales.y.max - this.bleCharts.qSignal.options.scales.y.min) <= 0.1
+                    );
+
+                    if (wasMicroMode) {
+                        // 如果之前是微小模式，重置到稍微大一点的范围，但保持相对较小
+                        this.bleCharts.iSignal.options.scales.y.min = Math.max(0, currentMinI - 0.1);
+                        this.bleCharts.iSignal.options.scales.y.max = currentMaxI + 0.1;
+                        this.bleCharts.qSignal.options.scales.y.min = Math.max(0, currentMinQ - 0.1);
+                        this.bleCharts.qSignal.options.scales.y.max = currentMaxQ + 0.1;
+                        console.log('🔄 微小模式重置：保持相对较小的范围');
+                    } else {
+                        // 正常重置到稍宽的初始范围
+                        this.bleCharts.iSignal.options.scales.y.min = 1.0;
+                        this.bleCharts.iSignal.options.scales.y.max = 3.0;
+                        this.bleCharts.qSignal.options.scales.y.min = 1.0;
+                        this.bleCharts.qSignal.options.scales.y.max = 3.0;
+                    }
                 }
                 console.log('🔄 自适应Y轴已重置，重新开始调节');
             }
@@ -3178,6 +3322,9 @@ class RadarWebApp {
                     const rangeI = this.adaptiveLastMaxI - this.adaptiveLastMinI;
                     const rangeQ = this.adaptiveLastMaxQ - this.adaptiveLastMinQ;
 
+                    // 详细调试信息
+                    console.log(`🔍 自适应调试: 样本数=${this.adaptiveSampleCount}, I范围=${rangeI.toFixed(4)}V (${this.adaptiveLastMinI.toFixed(3)}-${this.adaptiveLastMaxI.toFixed(3)}), Q范围=${rangeQ.toFixed(4)}V (${this.adaptiveLastMinQ.toFixed(3)}-${this.adaptiveLastMaxQ.toFixed(3)})`);
+
                     // 简化波动性评估：使用数据范围的简单比例来代替复杂标准差计算
                     const dataRangeI = this.adaptiveLastMaxI - this.adaptiveLastMinI;
                     const dataRangeQ = this.adaptiveLastMaxQ - this.adaptiveLastMinQ;
@@ -3186,29 +3333,51 @@ class RadarWebApp {
                     const stdI = dataRangeI * 0.1;
                     const stdQ = dataRangeQ * 0.1;
 
-                    // 自适应完成后，设置极紧凑的范围来显示微小变动
-                    // 使用标准差的3倍作为余量，但最大不超过数据范围的5%，最小0.01V
-                    const detailPaddingI = Math.max(0.01, Math.min(stdI * 3, rangeI * 0.05));
-                    const detailPaddingQ = Math.max(0.01, Math.min(stdQ * 3, rangeQ * 0.05));
+                    let newMinI, newMaxI, newMinQ, newMaxQ;
 
-                    // 设置极紧凑的范围：数据范围 ± 很小的余量
-                    const newMinI = Math.max(0, this.adaptiveLastMinI - detailPaddingI);
-                    const newMaxI = this.adaptiveLastMaxI + detailPaddingI;
-                    const newMinQ = Math.max(0, this.adaptiveLastMinQ - detailPaddingQ);
-                    const newMaxQ = this.adaptiveLastMaxQ + detailPaddingQ;
+                    // 实时微小波动检测：波动小于0.2V时启用0.1单位Y轴控制
+                    const microFluctuationThreshold = 0.2; // 微小波动阈值：总范围0.2V
+                    if (rangeI <= microFluctuationThreshold || rangeQ <= microFluctuationThreshold) {
+                        // 计算信号中心点
+                        const centerI = (this.adaptiveLastMinI + this.adaptiveLastMaxI) / 2;
+                        const centerQ = (this.adaptiveLastMinQ + this.adaptiveLastMaxQ) / 2;
+
+                        // 设置0.1单位长度的Y轴范围（±0.05），最大化放大微小波动
+                        newMinI = Math.max(0, centerI - 0.05);
+                        newMaxI = centerI + 0.05;
+                        newMinQ = Math.max(0, centerQ - 0.05);
+                        newMaxQ = centerQ + 0.05;
+
+                        console.log(`🔬 微小波动检测触发! I范围=${rangeI.toFixed(4)}V, Q范围=${rangeQ.toFixed(4)}V，启用0.1单位Y轴控制`);
+                        console.log(`📍 信号中心: I=${centerI.toFixed(4)}V, Q=${centerQ.toFixed(4)}V`);
+                        console.log(`🎨 Y轴设置: I=[${newMinI.toFixed(4)}, ${newMaxI.toFixed(4)}], Q=[${newMinQ.toFixed(4)}, ${newMaxQ.toFixed(4)}]`);
+                    } else {
+                        // 自适应完成后，设置适度紧凑的范围来更清楚显示波峰
+                        // 使用标准差的3倍作为余量，但最大不超过数据范围的20%，最小0.01V
+                        const detailPaddingI = Math.max(0.01, Math.min(stdI * 3, rangeI * 0.20));
+                        const detailPaddingQ = Math.max(0.01, Math.min(stdQ * 3, rangeQ * 0.20));
+
+                        // 设置极紧凑的范围：数据范围 ± 很小的余量
+                        newMinI = Math.max(0, this.adaptiveLastMinI - detailPaddingI);
+                        newMaxI = this.adaptiveLastMaxI + detailPaddingI;
+                        newMinQ = Math.max(0, this.adaptiveLastMinQ - detailPaddingQ);
+                        newMaxQ = this.adaptiveLastMaxQ + detailPaddingQ;
+
+                        console.log(`🔄 标准自适应: I余量=${detailPaddingI.toFixed(3)}V, Q余量=${detailPaddingQ.toFixed(3)}V`);
+                    }
 
                     // 更新I通道Y轴
                     if (this.bleCharts.iSignal) {
                         this.bleCharts.iSignal.options.scales.y.min = newMinI;
                         this.bleCharts.iSignal.options.scales.y.max = newMaxI;
-                        console.log(`📊 自适应Y轴: I通道范围调整为 ${newMinI.toFixed(3)}-${newMaxI.toFixed(3)}V (标准差:${stdI.toFixed(4)}V, 余量:${paddingI.toFixed(3)}V)`);
+                        console.log(`📊 自适应Y轴: I通道范围调整为 ${newMinI.toFixed(3)}-${newMaxI.toFixed(3)}V (标准差:${stdI.toFixed(4)}V)`);
                     }
 
                     // 更新Q通道Y轴
                     if (this.bleCharts.qSignal) {
                         this.bleCharts.qSignal.options.scales.y.min = newMinQ;
                         this.bleCharts.qSignal.options.scales.y.max = newMaxQ;
-                        console.log(`📊 自适应Y轴: Q通道范围调整为 ${newMinQ.toFixed(3)}-${newMaxQ.toFixed(3)}V (标准差:${stdQ.toFixed(4)}V, 余量:${paddingQ.toFixed(3)}V)`);
+                        console.log(`📊 自适应Y轴: Q通道范围调整为 ${newMinQ.toFixed(3)}-${newMaxQ.toFixed(3)}V (标准差:${stdQ.toFixed(4)}V)`);
                     }
 
                     this.adaptiveStabilized = true;
@@ -3295,24 +3464,32 @@ class RadarWebApp {
 
         // 更新温度图表
         if (this.bleCharts.temperature && this.bleBufferTemperature.length > 0) {
-            const tempData = this.bleBufferTemperature.slice(start);
+            const tempDataRaw = this.bleBufferTemperature.slice(start);
+            // 过滤掉null值，只显示有效温度数据
+            const validTempData = tempDataRaw.map((temp, idx) => temp !== null ? temp : null);
+
+            // 计算有效温度数据的统计
+            const validTemps = validTempData.filter(temp => temp !== null);
+            const hasValidTemp = validTemps.length > 0;
+
             this.bleCharts.temperature.data = {
                 labels: indices,
                 datasets: [
                     {
-                        label: '温度 (°C)',
-                        data: tempData,
-                        borderColor: 'rgb(255, 159, 64)',
-                        backgroundColor: 'rgba(255, 159, 64, 0.2)',
+                        label: hasValidTemp ? `温度 (°C) - 最新: ${validTemps[validTemps.length - 1]?.toFixed(1)}°C` : '温度 (°C) - 无数据',
+                        data: validTempData,
+                        borderColor: hasValidTemp ? 'rgb(255, 159, 64)' : 'rgb(200, 200, 200)',
+                        backgroundColor: hasValidTemp ? 'rgba(255, 159, 64, 0.2)' : 'rgba(200, 200, 200, 0.1)',
                         tension: 0.3,
                         pointRadius: 0,
-                        fill: true
+                        fill: true,
+                        spanGaps: false // 不连接null值之间的间隙
                     }
                 ]
             };
             this.bleCharts.temperature.update();
             if (this.bleDataCount === 10) {
-                console.log('✅ 温度图表已更新');
+                console.log(`✅ 温度图表已更新 - 有效温度点: ${validTemps.length}/${tempDataRaw.length}`);
             }
         } else if (this.bleBufferTemperature.length > 0) {
             console.warn('❌ 温度图表对象不存在，但有温度数据');
@@ -3534,36 +3711,29 @@ class RadarWebApp {
 
             // ===== 心率平滑处理（参考main.py第332-340行）=====
             
-            // 1. 添加到历史记录
-            this.heartRateHistory.push(heartRate);
-            this.respiratoryHistory.push(respiratoryRate);
-            
-            // 2. 保持历史记录长度
-            if (this.heartRateHistory.length > this.historyMaxLength) {
-                this.heartRateHistory.shift();
-                this.respiratoryHistory.shift();
-            }
-            
-            // 3. 计算移动平均（参考main.py第333行的np.mean(heart_history_short)）
+            // 1. 更新循环历史记录（类似Python端的固定长度数组）
+            this.heartRateHistory[this.historyIndex] = heartRate;
+            this.respiratoryHistory[this.historyIndex] = respiratoryRate;
+            this.historyIndex = (this.historyIndex + 1) % this.historyMaxLength;
+
+            // 2. 计算移动平均（参考main.py第333行的np.mean(heart_history_short)）
             const avgHeartRate = Math.round(
-                this.heartRateHistory.reduce((a, b) => a + b, 0) / this.heartRateHistory.length
+                this.heartRateHistory.reduce((a, b) => a + b, 0) / this.historyMaxLength
             );
             const avgRespRate = Math.round(
-                this.respiratoryHistory.reduce((a, b) => a + b, 0) / this.respiratoryHistory.length
+                this.respiratoryHistory.reduce((a, b) => a + b, 0) / this.historyMaxLength
             );
             
             // 4. 心率稳定控制（参考main.py第353-360行的逻辑）
             let displayHeartRate = avgHeartRate;
             let displayRespRate = avgRespRate;
             
-            // 如果心率变化过大，限制变化幅度
-            if (this.heartRateHistory.length >= 5) {
-                const delta = avgHeartRate - this.lastStableHeartRate;
-                if (Math.abs(delta) > this.heartRateDelta) {
-                    // 限制变化：只允许每次改变heartRateDelta的幅度
-                    displayHeartRate = this.lastStableHeartRate + Math.sign(delta) * this.heartRateDelta;
-                    console.log(`心率限制: ${avgHeartRate} → ${displayHeartRate} (变化${delta}bpm超过阈值${this.heartRateDelta}bpm)`);
-                }
+            // 始终应用心率变化限制（数组已填满历史数据）
+            const delta = avgHeartRate - this.lastStableHeartRate;
+            if (Math.abs(delta) > this.heartRateDelta) {
+                // 限制变化：只允许每次改变heartRateDelta的幅度
+                displayHeartRate = this.lastStableHeartRate + Math.sign(delta) * this.heartRateDelta;
+                console.log(`心率限制: ${avgHeartRate} → ${displayHeartRate} (变化${delta}bpm超过阈值${this.heartRateDelta}bpm)`);
             }
             
             // 5. 更新稳定值

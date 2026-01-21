@@ -5,6 +5,7 @@ import traceback
 from typing import Any, Dict
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .jobs import create_job, get_job
 from .rag_tools import rag_reindex_tool, rag_search_tool, warmup_rag_cache
@@ -30,6 +31,18 @@ from .trace_store import new_trace_id, write_trace
 
 
 app = FastAPI(title="DeepSeek-OCR Agent Tools API", version="0.1.0")
+
+# Frontend is a static page and may be served from a different origin (nginx/n8n).
+# For early-stage deployment we allow CORS. You can tighten this later by setting
+# AGENT_CORS_ORIGINS="https://your-domain,https://another-domain".
+_origins = [o.strip() for o in os.getenv("AGENT_CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins if _origins != ["*"] else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")

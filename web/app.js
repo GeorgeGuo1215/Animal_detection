@@ -94,6 +94,8 @@ class RadarWebApp {
         this.initializeCharts();
         this.initializeBluetoothCharts();
         this.initializeBLEECG();
+        this.initializeFileECG();
+        this.initializeHealthChat();
 
         // 初始化BLE事件
         this.initializeBLE();
@@ -103,6 +105,29 @@ class RadarWebApp {
 
         // 启动接收看门狗：若长时间无数据则判定断连
         this.startRxWatchdog();
+    }
+
+    /**
+     * 初始化健康对话设置
+     */
+    initializeHealthChat() {
+        const chatAgentEndpointEl = document.getElementById('chatAgentEndpoint');
+        if (chatAgentEndpointEl) {
+            chatAgentEndpointEl.value = localStorage.getItem('chatAgentEndpoint') || 'http://localhost:9001';
+        }
+
+        // 添加回车发送消息功能
+        const chatInputEl = document.getElementById('chatInput');
+        if (chatInputEl) {
+            chatInputEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!document.getElementById('sendChatBtn').disabled) {
+                        this.sendChatMessage();
+                    }
+                }
+            });
+        }
     }
 
     /**
@@ -958,16 +983,19 @@ class RadarWebApp {
      */
     handleFileSelect(event) {
         const files = Array.from(event.target.files);
-        const txtFiles = files.filter(file => file.name.toLowerCase().endsWith('.txt'));
-        
-        if (txtFiles.length === 0) {
-            this.showMessage('请选择.txt格式的数据文件', 'warning');
+        const validFiles = files.filter(file =>
+            file.name.toLowerCase().endsWith('.txt') ||
+            file.name.toLowerCase().endsWith('.json')
+        );
+
+        if (validFiles.length === 0) {
+            this.showMessage('请选择.txt或.json格式的数据文件', 'warning');
             return;
         }
 
-        this.selectedFiles = txtFiles;
+        this.selectedFiles = validFiles;
         this.displayFileList();
-        this.showMessage(`已选择 ${txtFiles.length} 个文件`, 'success');
+        this.showMessage(`已选择 ${validFiles.length} 个文件`, 'success');
     }
 
     /**
@@ -1026,13 +1054,22 @@ class RadarWebApp {
                 
                 // 读取文件内容
                 const fileContent = await this.readFileContent(file);
-                
+
                 // 处理数据
-                const result = this.processor.processSingleFile(file.name, fileContent);
+                let result;
+                if (file.name.toLowerCase().endsWith('.json')) {
+                    result = this.processJsonFile(file.name, fileContent);
+                } else {
+                    result = this.processor.processSingleFile(file.name, fileContent);
+                }
                 this.processedResults.push(result);
                 
                 if (result.status === 'success') {
-                    this.addStatusLog(`✓ ${file.name} 处理成功 - 心率: ${result.heartRate} bpm, 呼吸: ${result.respiratoryRate} bpm`);
+                    if (result.dataType === 'json') {
+                        this.addStatusLog(`✓ ${file.name} 处理成功 - 动物: ${result.animal.name}(${result.animal.species}), 心率: ${result.heartRate} bpm, 呼吸: ${result.respiratoryRate} bpm`);
+                    } else {
+                        this.addStatusLog(`✓ ${file.name} 处理成功 - 心率: ${result.heartRate} bpm, 呼吸: ${result.respiratoryRate} bpm`);
+                    }
                 } else {
                     this.addStatusLog(`✗ ${file.name} 处理失败: ${result.error}`);
                 }
@@ -1071,28 +1108,622 @@ class RadarWebApp {
     }
 
     /**
+     * 处理JSON格式的传感器数据文件
+     */
+    processJsonFile(fileName, jsonContent) {
+        try {
+            const data = JSON.parse(jsonContent);
+
+            // 验证数据结构
+            if (!data.event_id || !data.animal || !data.signals) {
+                return {
+                    fileName: fileName,
+                    status: 'error',
+                    error: 'JSON格式不正确，缺少必要字段'
+                };
+            }
+
+            // 提取动物信息
+            const animal = data.animal;
+            const device = data.device || {};
+            const vitals = data.signals.vitals || { samples: [] };
+            const accel = data.signals.accel || { samples: [] };
+            const temperature = data.signals.temperature || { samples: [] };
+
+            // 计算统计信息
+            const hrValues = vitals.samples.map(s => s.hr).filter(hr => hr && hr > 0);
+            const rrValues = vitals.samples.map(s => s.rr).filter(rr => rr && rr > 0);
+            const tempValues = temperature.samples.map(s => s.value).filter(temp => temp && temp > 0);
+
+            const avgHeartRate = hrValues.length > 0 ? hrValues.reduce((a, b) => a + b, 0) / hrValues.length : 0;
+            const avgRespRate = rrValues.length > 0 ? rrValues.reduce((a, b) => a + b, 0) / rrValues.length : 0;
+            const avgTemp = tempValues.length > 0 ? tempValues.reduce((a, b) => a + b, 0) / tempValues.length : 0;
+
+            return {
+                fileName: fileName,
+                status: 'success',
+                dataType: 'json',
+                animal: animal,
+                device: device,
+                heartRate: Math.round(avgHeartRate * 10) / 10,
+                respiratoryRate: Math.round(avgRespRate * 10) / 10,
+                temperature: Math.round(avgTemp * 10) / 10,
+                dataPoints: Math.max(vitals.samples.length, accel.samples.length, temperature.samples.length),
+                hrData: hrValues,
+                rrData: rrValues,
+                tempData: tempValues,
+                rawData: data
+            };
+
+        } catch (error) {
+            return {
+                fileName: fileName,
+                status: 'error',
+                error: `JSON解析失败: ${error.message}`
+            };
+        }
+    }
+
+    /**
      * 显示处理结果
      */
     displayResults() {
         const successResults = this.processedResults.filter(r => r.status === 'success');
-        
+
         if (successResults.length === 0) {
             this.showMessage('没有成功处理的文件', 'warning');
             return;
         }
 
+        // 检查是否有JSON数据
+        const hasJsonData = successResults.some(r => r.dataType === 'json');
+
         // 更新统计信息
         this.updateStatistics(successResults);
-        
+
         // 更新图表
         this.updateCharts(successResults);
-        
+
         // 更新结果表格
         this.updateResultsTable();
-        
+
+        // 显示JSON数据详细信息
+        if (hasJsonData) {
+            this.displayJsonDataDetails(successResults);
+            document.getElementById('jsonDataSection').style.display = 'block';
+            document.getElementById('healthAnalysisSection').style.display = 'block';
+        } else {
+            document.getElementById('jsonDataSection').style.display = 'none';
+            document.getElementById('healthAnalysisSection').style.display = 'none';
+        }
+
+        // JSON时隐藏部分图表，仅保留心率/呼吸时间序列
+        this.setChartVisibilityForJson(hasJsonData);
+
         // 显示结果区域
         document.getElementById('resultsSection').style.display = 'block';
         document.getElementById('resultsSection').classList.add('fade-in');
+    }
+
+    /**
+     * 显示JSON数据的详细信息
+     */
+    displayJsonDataDetails(results) {
+        const jsonResults = results.filter(r => r.dataType === 'json');
+        if (jsonResults.length === 0) return;
+
+        // 使用最新的JSON数据（如果有多个，取第一个）
+        const latestResult = jsonResults[0];
+        const animal = latestResult.animal;
+        const device = latestResult.device;
+        const rawData = latestResult.rawData;
+
+        // 更新动物信息
+        const animalEmoji = animal.species === 'dog' ? '🐕' : animal.species === 'cat' ? '🐱' : '🐾';
+        document.getElementById('animalEmoji').textContent = animalEmoji;
+        document.getElementById('animalName').textContent = animal.name || '未命名宠物';
+        document.getElementById('animalBasicInfo').textContent =
+            `${animal.breed || '未知品种'} · ${animal.age_months ? Math.floor(animal.age_months / 12) + '岁' + (animal.age_months % 12) + '个月' : '年龄未知'} · ${animal.sex === 'male' ? '公' : animal.sex === 'female' ? '母' : '性别未知'}`;
+        document.getElementById('animalWeight').textContent = animal.weight_kg ? `${animal.weight_kg} kg` : '-- kg';
+        document.getElementById('animalId').textContent = animal.animal_id || '--';
+
+        // 更新设备信息
+        document.getElementById('deviceId').textContent = device.device_id || '--';
+        document.getElementById('deviceFirmware').textContent = device.firmware || '--';
+
+        const samplingInfo = device.sampling_hz ?
+            `心率:${device.sampling_hz.vitals || '--'}/秒, 加速度:${device.sampling_hz.accel || '--'}Hz, 温度:${device.sampling_hz.temp || '--'}/秒` : '--';
+        document.getElementById('deviceSampling').textContent = samplingInfo;
+
+        // 更新测量信息
+        document.getElementById('eventId').textContent = rawData.event_id || '--';
+
+        const eventTime = rawData.ts ? new Date(rawData.ts).toLocaleString('zh-CN') : '--';
+        document.getElementById('measurementTime').textContent = eventTime;
+
+        const window = rawData.window;
+        if (window && window.start_ts && window.end_ts) {
+            const startTime = new Date(window.start_ts);
+            const endTime = new Date(window.end_ts);
+            const duration = Math.round((endTime - startTime) / 1000);
+            document.getElementById('measurementDuration').textContent = `${duration} 秒`;
+        } else {
+            document.getElementById('measurementDuration').textContent = '--';
+        }
+
+        const context = rawData.context || {};
+        const location = context.location ?
+            `${context.location.lat}, ${context.location.lng}` : '--';
+        document.getElementById('measurementLocation').textContent = location;
+
+        document.getElementById('measurementNotes').textContent = context.notes || '--';
+
+        // 设置默认的agent endpoint
+        const agentEndpointEl = document.getElementById('agentEndpoint');
+        if (agentEndpointEl && !agentEndpointEl.value) {
+            agentEndpointEl.value = localStorage.getItem('agentEndpoint') || 'http://localhost:8000';
+        }
+    }
+
+    /**
+     * 执行宠物健康分析
+     */
+    async performHealthAnalysis() {
+        const jsonResults = this.processedResults.filter(r => r.dataType === 'json');
+        if (jsonResults.length === 0) {
+            this.showMessage('没有找到可分析的JSON数据', 'warning');
+            return;
+        }
+
+        const agentEndpoint = document.getElementById('agentEndpoint').value.trim();
+        if (!agentEndpoint) {
+            this.showMessage('请设置Agent API地址', 'warning');
+            return;
+        }
+
+        // 保存endpoint到localStorage
+        localStorage.setItem('agentEndpoint', agentEndpoint);
+
+        const result = jsonResults[0]; // 使用第一个JSON结果
+        const analysisBtn = document.getElementById('healthAnalysisBtn');
+        const reportContainer = document.getElementById('healthAnalysisReport');
+        const reportContent = document.getElementById('analysisReportContent');
+
+        // 显示分析界面
+        reportContainer.style.display = 'block';
+        analysisBtn.disabled = true;
+        analysisBtn.textContent = '🔄 分析中...';
+
+        reportContent.innerHTML = `
+            <div class="loading-analysis">
+                <div class="loading-spinner"></div>
+                <p>正在分析宠物健康状况，请稍候...</p>
+            </div>
+        `;
+
+        try {
+            // 构建健康分析查询
+            const query = this.buildHealthAnalysisQuery(result);
+
+            // 调用agent API
+            const response = await fetch(`${agentEndpoint}/agent/plan_and_solve`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    query: query,
+                    llm_base_url: 'https://api.openai.com/v1',
+                    llm_api_key:  process.env.OPENAI_API_KEY, // 需要用户配置
+                    llm_model: 'deepseek-chat',
+                    allowed_tools: ['rag.search'],
+                    temperature: 0.7,
+                    max_tokens: 2000
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Agent API请求失败: ${response.status}`);
+            }
+
+            const analysisResult = await response.json();
+
+            if (!analysisResult.ok) {
+                throw new Error(analysisResult.error?.message || '分析失败');
+            }
+
+            // 显示分析结果
+            this.displayHealthAnalysisResult(analysisResult, result);
+
+        } catch (error) {
+            console.error('健康分析失败:', error);
+            reportContent.innerHTML = `
+                <div class="analysis-error">
+                    <h4>❌ 分析失败</h4>
+                    <p>错误信息: ${error.message}</p>
+                    <p>请检查Agent API地址和配置是否正确。</p>
+                </div>
+            `;
+        } finally {
+            analysisBtn.disabled = false;
+            analysisBtn.textContent = '🩺 开始健康分析';
+        }
+    }
+
+    /**
+     * 构建健康分析查询
+     */
+    buildHealthAnalysisQuery(result) {
+        const animal = result.animal;
+        const vitals = result.rawData.signals.vitals || { samples: [] };
+        const context = result.rawData.context || {};
+
+        const avgHR = result.heartRate;
+        const avgRR = result.respiratoryRate;
+        const temp = result.temperature;
+
+        let query = `请分析这只${animal.species === 'dog' ? '狗狗' : '猫咪'}的健康状况：
+
+宠物信息：
+- 姓名: ${animal.name || '未命名'}
+- 品种: ${animal.breed || '未知'}
+- 年龄: ${animal.age_months ? Math.floor(animal.age_months / 12) + '岁' + (animal.age_months % 12) + '个月' : '未知'}
+- 体重: ${animal.weight_kg || '未知'}kg
+- 性别: ${animal.sex === 'male' ? '公' : animal.sex === 'female' ? '母' : '未知'}
+
+生理指标：
+- 平均心率: ${avgHR} bpm
+- 平均呼吸频率: ${avgRR} bpm
+- 体温: ${temp}°C
+
+测量情况：
+- 位置: ${context.location ? `${context.location.lat}, ${context.location.lng}` : '未知'}
+- 备注: ${context.notes || '无'}
+- 标签: ${context.tags ? context.tags.join(', ') : '无'}
+
+请基于这些数据分析宠物的健康状况，包括：
+1. 心率和呼吸频率是否正常
+2. 体温是否正常
+3. 整体健康评估
+4. 如果有异常，建议采取什么措施
+5. 日常护理建议
+
+请提供详细的分析报告。`;
+
+        return query;
+    }
+
+    /**
+     * 显示健康分析结果
+     */
+    displayHealthAnalysisResult(analysisResult, originalData) {
+        const timestamp = new Date().toLocaleString('zh-CN');
+        document.getElementById('analysisTimestamp').textContent = `分析时间: ${timestamp}`;
+
+        const reportContent = document.getElementById('analysisReportContent');
+
+        // 格式化分析结果
+        const answer = analysisResult.answer || '暂无分析结果';
+        const plan = analysisResult.plan || [];
+        const toolResults = analysisResult.tool_results || [];
+
+        reportContent.innerHTML = `
+            <div class="analysis-summary">
+                <h4>📊 分析总结</h4>
+                <div class="analysis-content">${this.formatAnalysisText(answer)}</div>
+            </div>
+
+            ${plan.length > 0 ? `
+            <div class="analysis-plan" style="margin-top: 20px;">
+                <h4>🔍 分析过程</h4>
+                <ol>
+                    ${plan.map(step => `<li><strong>${step.type === 'tool' ? '工具调用' : '推理'}:</strong> ${step.note || step.tool_name || '未知步骤'}</li>`).join('')}
+                </ol>
+            </div>
+            ` : ''}
+
+            ${toolResults.length > 0 ? `
+            <div class="tool-results" style="margin-top: 20px;">
+                <h4>📚 参考资料</h4>
+                ${toolResults.map((result, index) => `
+                    <div class="tool-result-item">
+                        <h5>工具 ${index + 1}: ${result.tool_name}</h5>
+                        <div class="tool-content">${this.formatToolResult(result)}</div>
+                    </div>
+                `).join('')}
+            </div>
+            ` : ''}
+        `;
+
+        this.showMessage('健康分析完成！', 'success');
+    }
+
+    /**
+     * 格式化分析文本
+     */
+    formatAnalysisText(text) {
+        if (!text) return '暂无内容';
+
+        // 简单的文本格式化，转换换行符和列表
+        return text
+            .replace(/\n/g, '<br/>')
+            .replace(/(\d+)\.\s/g, '<br/>$1. ')
+            .replace(/^(\d+)\.\s/gm, '<br/>$1. ');
+    }
+
+    /**
+     * 格式化工具结果
+     */
+    formatToolResult(result) {
+        if (!result || !result.data) return '暂无数据';
+
+        try {
+            const data = typeof result.data === 'string' ? JSON.parse(result.data) : result.data;
+
+            if (result.tool_name === 'rag.search' && data.results) {
+                return data.results.map(item =>
+                    `<div class="rag-item">
+                        <strong>相关度: ${item.score ? item.score.toFixed(3) : '未知'}</strong><br/>
+                        ${item.content || item.text || '无内容'}
+                    </div>`
+                ).join('');
+            }
+
+            return JSON.stringify(data, null, 2);
+        } catch (e) {
+            return result.data;
+        }
+    }
+
+    /**
+     * 导出健康报告
+     */
+    exportHealthReport() {
+        const reportContent = document.getElementById('analysisReportContent');
+        if (!reportContent) {
+            this.showMessage('没有可导出的报告', 'warning');
+            return;
+        }
+
+        const reportText = reportContent.innerText || reportContent.textContent;
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+
+        const blob = new Blob([reportText], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `宠物健康分析报告_${timestamp}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        this.showMessage('报告已导出！', 'success');
+    }
+
+    /**
+     * 初始化宠物健康对话
+     */
+    initializeHealthChat() {
+        const agentEndpoint = document.getElementById('chatAgentEndpoint').value.trim();
+        if (!agentEndpoint) {
+            this.showMessage('请设置Agent API地址', 'warning');
+            return;
+        }
+
+        // 保存endpoint到localStorage
+        localStorage.setItem('chatAgentEndpoint', agentEndpoint);
+
+        // 显示对话界面
+        document.getElementById('chatContainer').style.display = 'block';
+        document.getElementById('initChatBtn').style.display = 'none';
+        document.getElementById('clearChatBtn').style.display = 'inline-block';
+        document.getElementById('sendChatBtn').disabled = false;
+
+        // 加载历史对话
+        this.loadChatHistory();
+
+        this.showMessage('宠物健康对话已启动！', 'success');
+    }
+
+    /**
+     * 发送对话消息
+     */
+    async sendChatMessage() {
+        const inputEl = document.getElementById('chatInput');
+        const message = inputEl.value.trim();
+        if (!message) {
+            this.showMessage('请输入问题内容', 'warning');
+            return;
+        }
+
+        const agentEndpoint = document.getElementById('chatAgentEndpoint').value.trim();
+        const sendBtn = document.getElementById('sendChatBtn');
+
+        // 添加用户消息到界面
+        this.addChatMessage('user', message);
+        inputEl.value = '';
+        sendBtn.disabled = true;
+        sendBtn.textContent = '发送中...';
+
+        // 添加AI思考中消息
+        const thinkingMessageId = this.addChatMessage('assistant', '正在思考中...', true);
+
+        try {
+            // 构建上下文信息
+            const contextInfo = this.buildChatContext();
+
+            // 构建完整查询
+            const fullQuery = `${contextInfo}\n\n用户问题: ${message}`;
+
+            // 调用agent API
+            const response = await fetch(`${agentEndpoint}/agent/plan_and_solve`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    query: fullQuery,
+                    allowed_tools: ['rag.search'],
+                    temperature: 0.7,
+                    max_tokens: 1500
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Agent API请求失败: ${response.status}`);
+            }
+
+            const result = await response.json();
+
+            if (!result.ok) {
+                throw new Error(result.error?.message || '对话失败');
+            }
+
+            // 更新AI回复
+            this.updateChatMessage(thinkingMessageId, result.answer || '暂无回复');
+
+            // 保存对话历史
+            this.saveChatMessage('user', message);
+            this.saveChatMessage('assistant', result.answer || '暂无回复');
+
+        } catch (error) {
+            console.error('对话失败:', error);
+            this.updateChatMessage(thinkingMessageId, `❌ 抱歉，回复失败: ${error.message}`);
+        } finally {
+            sendBtn.disabled = false;
+            sendBtn.textContent = '发送';
+        }
+    }
+
+    /**
+     * 构建对话上下文信息
+     */
+    buildChatContext() {
+        const jsonResults = this.processedResults.filter(r => r.dataType === 'json');
+        let context = '您是专业的宠物健康助手，可以解答关于宠物健康、护理、训练等方面的问题。';
+
+        if (jsonResults.length > 0) {
+            const result = jsonResults[0];
+            const animal = result.animal;
+
+            context += `\n\n当前宠物信息:
+- 宠物类型: ${animal.species === 'dog' ? '狗狗' : '猫咪'}
+- 姓名: ${animal.name || '未命名'}
+- 品种: ${animal.breed || '未知'}
+- 年龄: ${animal.age_months ? Math.floor(animal.age_months / 12) + '岁' + (animal.age_months % 12) + '个月' : '未知'}
+- 体重: ${animal.weight_kg || '未知'}kg
+- 性别: ${animal.sex === 'male' ? '公' : animal.sex === 'female' ? '母' : '未知'}
+
+最近的生理指标:
+- 平均心率: ${result.heartRate} bpm
+- 平均呼吸频率: ${result.respiratoryRate} bpm
+- 体温: ${result.temperature}°C
+
+请基于这些信息提供专业的建议。`;
+        }
+
+        return context;
+    }
+
+    /**
+     * 添加聊天消息到界面
+     */
+    addChatMessage(role, content, isThinking = false) {
+        const messagesEl = document.getElementById('chatMessages');
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+        const messageHtml = `
+            <div class="chat-message ${role}-message ${isThinking ? 'thinking' : ''}" id="${messageId}">
+                <div class="message-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+                <div class="message-content">
+                    <div class="message-text">${this.formatChatMessage(content)}</div>
+                    <div class="message-time">${new Date().toLocaleTimeString('zh-CN')}</div>
+                </div>
+            </div>
+        `;
+
+        messagesEl.insertAdjacentHTML('beforeend', messageHtml);
+
+        // 滚动到底部
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        return messageId;
+    }
+
+    /**
+     * 更新聊天消息
+     */
+    updateChatMessage(messageId, newContent) {
+        const messageEl = document.getElementById(messageId);
+        if (messageEl) {
+            const textEl = messageEl.querySelector('.message-text');
+            if (textEl) {
+                textEl.innerHTML = this.formatChatMessage(newContent);
+                messageEl.classList.remove('thinking');
+            }
+        }
+    }
+
+    /**
+     * 格式化聊天消息
+     */
+    formatChatMessage(text) {
+        if (!text) return '';
+
+        return text
+            .replace(/\n/g, '<br/>')
+            .replace(/(\d+)\.\s/g, '<br/>$1. ')
+            .replace(/^(\d+)\.\s/gm, '<br/>$1. ');
+    }
+
+    /**
+     * 保存聊天消息到本地存储
+     */
+    saveChatMessage(role, content) {
+        const chatHistory = JSON.parse(localStorage.getItem('petHealthChatHistory') || '[]');
+        chatHistory.push({
+            role: role,
+            content: content,
+            timestamp: new Date().toISOString()
+        });
+
+        // 只保留最近50条消息
+        if (chatHistory.length > 50) {
+            chatHistory.splice(0, chatHistory.length - 50);
+        }
+
+        localStorage.setItem('petHealthChatHistory', JSON.stringify(chatHistory));
+    }
+
+    /**
+     * 加载聊天历史
+     */
+    loadChatHistory() {
+        const chatHistory = JSON.parse(localStorage.getItem('petHealthChatHistory') || '[]');
+        const messagesEl = document.getElementById('chatMessages');
+
+        // 清空现有消息（保留欢迎消息）
+        const welcomeMessage = messagesEl.querySelector('.welcome-message');
+        messagesEl.innerHTML = '';
+        if (welcomeMessage) {
+            messagesEl.appendChild(welcomeMessage);
+        }
+
+        // 添加历史消息
+        chatHistory.forEach(msg => {
+            this.addChatMessage(msg.role, msg.content);
+        });
+    }
+
+    /**
+     * 清空聊天历史
+     */
+    clearChatHistory() {
+        localStorage.removeItem('petHealthChatHistory');
+        this.loadChatHistory();
+        this.showMessage('对话历史已清空', 'info');
     }
 
     /**
@@ -1282,6 +1913,103 @@ class RadarWebApp {
     }
 
     /**
+     * 初始化文件数据的动态ECG画布
+     */
+    initializeFileECG() {
+        const resCanvas = document.getElementById('respiratoryECGCanvas');
+        const hbCanvas = document.getElementById('heartbeatECGCanvas');
+        if (!resCanvas || !hbCanvas) return;
+
+        const ctxRes = resCanvas.getContext('2d');
+        const ctxHb = hbCanvas.getContext('2d');
+
+        // 从处理结果中获取数据
+        const firstResult = this.processedResults.find(r => r.respiratoryWave && r.heartbeatWave);
+        if (!firstResult) return;
+
+        this._fileECG = {
+            res: {
+                canvas: resCanvas,
+                ctx: ctxRes,
+                data: Array.from(firstResult.respiratoryWave),
+                playing: false,
+                cursor: 0
+            },
+            hb: {
+                canvas: hbCanvas,
+                ctx: ctxHb,
+                data: Array.from(firstResult.heartbeatWave),
+                playing: false,
+                cursor: 0
+            },
+            raf: null
+        };
+
+        const draw = () => {
+            const { res, hb } = this._fileECG;
+
+            // 绘制呼吸波形
+            [res, hb].forEach(track => {
+                const { canvas, ctx, data, cursor } = track;
+                const w = canvas.width = canvas.clientWidth || 600;
+                const h = canvas.height = canvas.clientHeight || 160;
+                ctx.clearRect(0, 0, w, h);
+
+                // 绘制网格
+                ctx.strokeStyle = '#e0e0e0';
+                ctx.lineWidth = 1;
+                for (let x = 0; x < w; x += 20) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, h);
+                    ctx.stroke();
+                }
+                for (let y = 0; y < h; y += 20) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(w, y);
+                    ctx.stroke();
+                }
+
+                // 绘制波形
+                if (data.length > 0) {
+                    ctx.strokeStyle = track === res ? '#28a745' : '#dc3545';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+
+                    const displayPoints = Math.min(200, data.length);
+                    const startIdx = Math.max(0, cursor - displayPoints);
+
+                    for (let i = 0; i < displayPoints && startIdx + i < data.length; i++) {
+                        const x = (i / displayPoints) * w;
+                        const value = data[startIdx + i];
+                        const y = h/2 - (value * h/4); // 缩放并居中
+
+                        if (i === 0) {
+                            ctx.moveTo(x, y);
+                        } else {
+                            ctx.lineTo(x, y);
+                        }
+                    }
+                    ctx.stroke();
+                }
+            });
+
+            // 更新游标
+            if (res.playing || hb.playing) {
+                this._fileECG.res.cursor = (this._fileECG.res.cursor + 1) % Math.max(1, this._fileECG.res.data.length);
+                this._fileECG.hb.cursor = (this._fileECG.hb.cursor + 1) % Math.max(1, this._fileECG.hb.data.length);
+                this._fileECG.raf = requestAnimationFrame(draw);
+            } else {
+                cancelAnimationFrame(this._fileECG.raf);
+                this._fileECG.raf = null;
+            }
+        };
+
+        this._fileECG.draw = draw;
+    }
+
+    /**
      * 初始化图表
      */
     initializeCharts() {
@@ -1435,7 +2163,13 @@ class RadarWebApp {
 
         // 使用第一个成功的结果来显示波形
         const firstResult = results[0];
-        
+
+        // 如果是JSON数据，只更新心率和呼吸率时间序列图
+        if (firstResult.dataType === 'json') {
+            this.updateJsonCharts(results);
+            return;
+        }
+
         // 更新I/Q信号图
         const sampleSize = Math.min(1000, firstResult.iData.length);
         const indices = Array.from({length: sampleSize}, (_, i) => i);
@@ -1501,31 +2235,35 @@ class RadarWebApp {
         };
         this.charts.constellation.update();
 
-        // 更新呼吸波形
-        this.charts.respiratory.data = {
-            labels: indices,
-            datasets: [{
-                label: `呼吸波形 (${firstResult.respiratoryRate} bpm)`,
-                data: Array.from(firstResult.respiratoryWave.slice(0, sampleSize)),
-                borderColor: 'rgb(75, 192, 192)',
-                backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                tension: 0.1
-            }]
-        };
-        this.charts.respiratory.update();
+        // 更新呼吸波形（仅当有波形数据时）
+        if (firstResult.respiratoryWave) {
+            this.charts.respiratory.data = {
+                labels: indices,
+                datasets: [{
+                    label: `呼吸波形 (${firstResult.respiratoryRate} bpm)`,
+                    data: Array.from(firstResult.respiratoryWave.slice(0, sampleSize)),
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.respiratory.update();
+        }
 
-        // 更新心跳波形
-        this.charts.heartbeat.data = {
-            labels: indices,
-            datasets: [{
-                label: `心跳波形 (${firstResult.heartRate} bpm)`,
-                data: Array.from(firstResult.heartbeatWave.slice(0, sampleSize)),
-                borderColor: 'rgb(255, 99, 132)',
-                backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                tension: 0.1
-            }]
-        };
-        this.charts.heartbeat.update();
+        // 更新心跳波形（仅当有波形数据时）
+        if (firstResult.heartbeatWave) {
+            this.charts.heartbeat.data = {
+                labels: indices,
+                datasets: [{
+                    label: `心跳波形 (${firstResult.heartRate} bpm)`,
+                    data: Array.from(firstResult.heartbeatWave.slice(0, sampleSize)),
+                    borderColor: 'rgb(255, 99, 132)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.heartbeat.update();
+        }
 
         // 更新心率分布图
         const fileNames = results.map(r => r.fileName.substring(0, 10) + '...');
@@ -1635,6 +2373,117 @@ class RadarWebApp {
     }
 
     /**
+     * 更新JSON数据的图表（只显示心率和呼吸率时间序列）
+     */
+    updateJsonCharts(results) {
+        const jsonResults = results.filter(r => r.dataType === 'json');
+        if (jsonResults.length === 0) return;
+
+        const firstResult = jsonResults[0];
+
+        // 只更新心率和呼吸率时间序列图
+        if (firstResult.hrData && firstResult.hrData.length > 0) {
+            const hrTimeLabels = Array.from({length: firstResult.hrData.length}, (_, i) => i + 1);
+            this.charts.heartRateTime.data = {
+                labels: hrTimeLabels,
+                datasets: [{
+                    label: '心率 (bpm)',
+                    data: firstResult.hrData,
+                    borderColor: 'rgb(255, 99, 132)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.heartRateTime.update();
+        }
+
+        if (firstResult.rrData && firstResult.rrData.length > 0) {
+            const rrTimeLabels = Array.from({length: firstResult.rrData.length}, (_, i) => i + 1);
+            this.charts.respRateTime.data = {
+                labels: rrTimeLabels,
+                datasets: [{
+                    label: '呼吸频率 (bpm)',
+                    data: firstResult.rrData,
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    tension: 0.1
+                }]
+            };
+            this.charts.respRateTime.update();
+        }
+
+        // 清空其他图表（雷达信号相关）
+        this.clearRadarCharts();
+    }
+
+    /**
+     * JSON数据时隐藏雷达相关图表
+     */
+    setChartVisibilityForJson(hasJsonData) {
+        const hideIds = [
+            'iqChart',
+            'constellationChart',
+            'respiratoryChart',
+            'heartbeatChart',
+            'heartRateChart',
+            'respRateChart'
+        ];
+        const ecgSection = document.querySelector('.ecg-section');
+
+        hideIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el && el.parentElement) {
+                el.parentElement.style.display = hasJsonData ? 'none' : 'block';
+            }
+        });
+
+        if (ecgSection) {
+            ecgSection.style.display = hasJsonData ? 'none' : 'block';
+        }
+    }
+
+    /**
+     * 清空雷达信号相关的图表（用于JSON数据时）
+     */
+    clearRadarCharts() {
+        // 清空I/Q信号图
+        if (this.charts.iq) {
+            this.charts.iq.data = { labels: [], datasets: [] };
+            this.charts.iq.update();
+        }
+
+        // 清空星座图
+        if (this.charts.constellation) {
+            this.charts.constellation.data = { datasets: [] };
+            this.charts.constellation.update();
+        }
+
+        // 清空呼吸波形图
+        if (this.charts.respiratory) {
+            this.charts.respiratory.data = { labels: [], datasets: [] };
+            this.charts.respiratory.update();
+        }
+
+        // 清空心跳波形图
+        if (this.charts.heartbeat) {
+            this.charts.heartbeat.data = { labels: [], datasets: [] };
+            this.charts.heartbeat.update();
+        }
+
+        // 清空心率分布图
+        if (this.charts.heartRate) {
+            this.charts.heartRate.data = { labels: [], datasets: [] };
+            this.charts.heartRate.update();
+        }
+
+        // 清空呼吸频率分布图
+        if (this.charts.respRate) {
+            this.charts.respRate.data = { labels: [], datasets: [] };
+            this.charts.respRate.update();
+        }
+    }
+
+    /**
      * 更新结果表格
      */
     updateResultsTable() {
@@ -1643,18 +2492,33 @@ class RadarWebApp {
 
         this.processedResults.forEach(result => {
             const row = document.createElement('tr');
-            
+
             if (result.status === 'success') {
-                row.innerHTML = `
-                    <td>${result.fileName}</td>
-                    <td>${result.dataPoints.toLocaleString()}</td>
-                    <td>${result.heartRate}</td>
-                    <td>${result.respiratoryRate}</td>
-                    <td>${result.circleCenter[0].toFixed(4)}</td>
-                    <td>${result.circleCenter[1].toFixed(4)}</td>
-                    <td>${result.circleRadius.toFixed(4)}</td>
-                    <td><span class="status-success">成功</span></td>
-                `;
+                if (result.dataType === 'json') {
+                    // JSON数据格式
+                    row.innerHTML = `
+                        <td>${result.fileName}</td>
+                        <td>${result.dataPoints.toLocaleString()}</td>
+                        <td>${result.heartRate}</td>
+                        <td>${result.respiratoryRate}</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td><span class="status-success">JSON数据</span></td>
+                    `;
+                } else {
+                    // TXT数据格式（原始雷达数据）
+                    row.innerHTML = `
+                        <td>${result.fileName}</td>
+                        <td>${result.dataPoints.toLocaleString()}</td>
+                        <td>${result.heartRate}</td>
+                        <td>${result.respiratoryRate}</td>
+                        <td>${result.circleCenter[0].toFixed(4)}</td>
+                        <td>${result.circleCenter[1].toFixed(4)}</td>
+                        <td>${result.circleRadius.toFixed(4)}</td>
+                        <td><span class="status-success">雷达数据</span></td>
+                    `;
+                }
             } else {
                 row.innerHTML = `
                     <td>${result.fileName}</td>
@@ -2587,6 +3451,37 @@ function hideBluetoothCharts() {
     }
 }
 
+// 文件数据ECG播放控制
+function toggleECGPlayback() {
+    if (!app) return;
+
+    // 初始化ECG播放器（如果还没有初始化）
+    if (!app._fileECG) {
+        app.initializeFileECG();
+    }
+
+    if (!app._fileECG) return;
+
+    const playing = app._fileECG.res.playing || app._fileECG.hb.playing;
+    const playBtn = document.getElementById('playBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+
+    if (playing) {
+        // 暂停播放
+        app._fileECG.res.playing = false;
+        app._fileECG.hb.playing = false;
+        pauseBtn.style.display = 'none';
+        playBtn.style.display = 'inline-block';
+    } else {
+        // 开始播放
+        app._fileECG.res.playing = true;
+        app._fileECG.hb.playing = true;
+        playBtn.style.display = 'none';
+        pauseBtn.style.display = 'inline-block';
+        if (!app._fileECG.raf) app._fileECG.draw();
+    }
+}
+
 // BLE ECG 控制
 function toggleBLEECGPlayback() {
     if (!app || !app._bleECG) return;
@@ -2604,6 +3499,43 @@ function toggleBLEECGPlayback() {
         playBtn.style.display = 'none';
         pauseBtn.style.display = 'inline-block';
         if (!app._bleECG.raf) app._bleECG.draw();
+    }
+}
+
+function resetECG() {
+    if (!app || !app._fileECG) return;
+    if (app._fileECG) {
+        app._fileECG.res.cursor = 0;
+        app._fileECG.hb.cursor = 0;
+        app._fileECG.res.playing = false;
+        app._fileECG.hb.playing = false;
+
+        const playBtn = document.getElementById('playBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
+        if (playBtn && pauseBtn) {
+            pauseBtn.style.display = 'none';
+            playBtn.style.display = 'inline-block';
+        }
+    }
+}
+
+function testECG() {
+    if (!app) return;
+
+    // 确保有处理结果
+    if (app.processedResults.length === 0) {
+        app.showMessage('请先上传并处理数据文件', 'warning');
+        return;
+    }
+
+    // 初始化并测试ECG播放
+    app.initializeFileECG();
+    if (app._fileECG) {
+        // 自动开始播放
+        toggleECGPlayback();
+        app.showMessage('ECG测试播放已启动', 'success');
+    } else {
+        app.showMessage('没有可播放的ECG数据', 'warning');
     }
 }
 
@@ -2770,4 +3702,26 @@ async function bleAzureDiagnose() {
     } catch (e) {
         alert('AI诊断出错: ' + e.message);
     }
+}
+
+// 宠物健康分析相关全局函数
+function performHealthAnalysis() {
+    app.performHealthAnalysis();
+}
+
+function exportHealthReport() {
+    app.exportHealthReport();
+}
+
+// 宠物健康对话相关全局函数
+function initializeHealthChat() {
+    app.initializeHealthChat();
+}
+
+function sendChatMessage() {
+    app.sendChatMessage();
+}
+
+function clearChatHistory() {
+    app.clearChatHistory();
 }

@@ -61,10 +61,25 @@ class RadarDataProcessor {
 
         for (const line of lines) {
             const parts = line.trim().split(/\s+/);
-            if (parts.length >= 3) {
-                timestamps.push(parts[0]);
-                iData.push(parseFloat(parts[1]));
-                qData.push(parseFloat(parts[2]));
+            if (parts.length >= 4) {
+                // 格式: 日期 时间 I Q
+                const ts = `${parts[0]} ${parts[1]}`;
+                const iVal = parseFloat(parts[2]);
+                const qVal = parseFloat(parts[3]);
+                if (Number.isFinite(iVal) && Number.isFinite(qVal)) {
+                    timestamps.push(ts);
+                    iData.push(iVal);
+                    qData.push(qVal);
+                }
+            } else if (parts.length >= 3) {
+                // 格式: 时间 I Q
+                const iVal = parseFloat(parts[1]);
+                const qVal = parseFloat(parts[2]);
+                if (Number.isFinite(iVal) && Number.isFinite(qVal)) {
+                    timestamps.push(parts[0]);
+                    iData.push(iVal);
+                    qData.push(qVal);
+                }
             }
         }
 

@@ -8,10 +8,10 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>毫米波雷达数据处理系统 - Web版</title>
-    <link rel="stylesheet" href="style.css?v=20260113-1">
+    <link rel="stylesheet" href="style.css?v=20260113-4">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="fft.js?v=20260113-1"></script>
-    <script src="bluetooth.js?v=20260113-1"></script>
+    <script src="fft.js?v=20260113-4"></script>
+    <script src="bluetooth.js?v=20260113-4"></script>
 </head>
 <body>
     <div class="container">
@@ -634,6 +634,7 @@
                     <div class="table-actions">
                         <button class="btn btn-warning" onclick="clearBluetoothData()">清空数据</button>
                         <button class="btn btn-info" onclick="saveBluetoothData()">保存数据</button>
+                        <button class="btn btn-purple" onclick="if(app) app.forceReinitializeCharts();">重新初始化图表</button>
                         <button class="btn btn-secondary" onclick="hideBluetoothCharts()">隐藏图表</button>
                     </div>
                 </div>
@@ -850,9 +851,9 @@
         </div>
     </div>
 
-    <script src="radar-processor.js?v=20260113-3"></script>
+    <script src="radar-processor.js?v=20260113-4"></script>
     <script src="azure-gpt.js?v=20260113-3"></script>
     <script src="resting-monitor.js?v=20260113-3"></script>
-    <script src="app.js?v=20260113-3"></script>
+    <script src="app.js?v=20260113-6"></script>
 </body>
 </html>

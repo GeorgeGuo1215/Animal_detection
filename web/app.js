@@ -244,19 +244,37 @@ class RadarWebApp {
 
             // 连接后自动展开蓝牙图表（避免用户觉得“没有gx/gy/gz可视图”）
             const chartsSection = document.getElementById('bluetoothChartsSection');
-            if (chartsSection) chartsSection.style.display = 'block';
+            if (chartsSection) {
+                chartsSection.style.display = 'block';
+                console.log('✅ 蓝牙图表区域已展开');
+            }
+
+            // 确保图表已初始化
+            if (!this.bleCharts.iSignal || !this.bleCharts.qSignal) {
+                console.log('🔄 重新初始化蓝牙图表...');
+                this.initializeBluetoothCharts();
+            }
+
             // 触发一次 resize/update，解决 display:none 时 Chart.js 尺寸为0的问题
             setTimeout(() => {
                 try {
+                    console.log('📊 刷新所有蓝牙图表...');
                     Object.values(this.bleCharts || {}).forEach(ch => {
                         if (ch && typeof ch.resize === 'function') ch.resize();
                         if (ch && typeof ch.update === 'function') ch.update('none');
                     });
-                } catch (_) {}
-            }, 50);
+                } catch (error) {
+                    console.error('❌ 图表刷新失败:', error);
+                }
+            }, 100);
 
-            // 自动初始化并启动蓝牙ECG播放
-            this.initializeBLEECG();
+        // 自动初始化并启动蓝牙ECG播放
+        this.initializeBLEECG();
+
+        // 调试：强制检查并重新初始化图表（如果需要）
+        setTimeout(() => {
+            this.forceReinitializeCharts();
+        }, 200);
             const playBtn = document.getElementById('blePlayBtn');
             const pauseBtn = document.getElementById('blePauseBtn');
             if (this._bleECG) {
@@ -1780,11 +1798,11 @@ class RadarWebApp {
                 plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 I 通道实时信号' } },
                 scales: {
                     x: { display: true, title: { display: true, text: '采样点' } },
-                    y: { 
-                        display: true, 
+                    y: {
+                        display: true,
                         title: { display: true, text: '幅度 (V)' },
-                        min: 0, 
-                        max: 3.5 // 固定范围 0-3.5V
+                        min: 2.0,
+                        max: 3.0 // 进一步缩小范围以显示更多细节 2.0-3.0V
                     }
                 }
             }
@@ -1799,11 +1817,11 @@ class RadarWebApp {
                 plugins: { ...chartOptions.plugins, title: { display: true, text: '蓝牙 Q 通道实时信号' } },
                 scales: {
                     x: { display: true, title: { display: true, text: '采样点' } },
-                    y: { 
-                        display: true, 
+                    y: {
+                        display: true,
                         title: { display: true, text: '幅度 (V)' },
-                        min: 0, 
-                        max: 3.5 // 固定范围 0-3.5V
+                        min: 2.0,
+                        max: 3.0 // 进一步缩小范围以显示更多细节 2.0-3.0V
                     }
                 }
             }
@@ -2966,20 +2984,31 @@ class RadarWebApp {
      * 更新蓝牙实时图表
      */
     updateBluetoothLiveCharts() {
-        if (!this.bleCharts.iq || !this.bleCharts.constellation) return;
+        // 检查所有必需的图表是否已初始化
+        if (!this.bleCharts.iSignal || !this.bleCharts.qSignal || !this.bleCharts.constellation) {
+            console.warn('❌ 蓝牙图表未初始化：', {
+                iSignal: !!this.bleCharts.iSignal,
+                qSignal: !!this.bleCharts.qSignal,
+                constellation: !!this.bleCharts.constellation,
+                imu: !!this.bleCharts.imu,
+                temperature: !!this.bleCharts.temperature
+            });
+            return;
+        }
         const len = this.bleBufferI.length;
         if (len < 10) return;
 
         // 🔍 调试：打印buffer统计
         if (this.bleDataCount <= 100 && this.bleDataCount % 50 === 0) {
             console.log(`\n📊 Buffer统计 (总点数=${len}):`);
-            console.log(`  I通道: 最小=${Math.min(...this.bleBufferI).toFixed(4)}, 最大=${Math.max(...this.bleBufferI).toFixed(4)}, 平均=${(this.bleBufferI.reduce((a,b)=>a+b,0)/len).toFixed(4)}`);
-            console.log(`  Q通道: 最小=${Math.min(...this.bleBufferQ).toFixed(4)}, 最大=${Math.max(...this.bleBufferQ).toFixed(4)}, 平均=${(this.bleBufferQ.reduce((a,b)=>a+b,0)/len).toFixed(4)}`);
+            console.log(`  I通道: 长度=${this.bleBufferI.length}, 最小=${Math.min(...this.bleBufferI).toFixed(4)}, 最大=${Math.max(...this.bleBufferI).toFixed(4)}`);
+            console.log(`  Q通道: 长度=${this.bleBufferQ.length}, 最小=${Math.min(...this.bleBufferQ).toFixed(4)}, 最大=${Math.max(...this.bleBufferQ).toFixed(4)}`);
             console.log(`  最后5个I值:`, this.bleBufferI.slice(-5).map(v => v.toFixed(4)));
             console.log(`  最后5个Q值:`, this.bleBufferQ.slice(-5).map(v => v.toFixed(4)));
             if (this.bleBufferTemperature.length > 0) {
-                console.log(`  温度: 最小=${Math.min(...this.bleBufferTemperature).toFixed(1)}°C, 最大=${Math.max(...this.bleBufferTemperature).toFixed(1)}°C, 当前=${this.bleBufferTemperature[this.bleBufferTemperature.length - 1].toFixed(1)}°C`);
+                console.log(`  温度: 长度=${this.bleBufferTemperature.length}, 当前=${this.bleBufferTemperature[this.bleBufferTemperature.length - 1].toFixed(1)}°C`);
             }
+            console.log(`  IMU: X=${this.bleBufferIMU_X.length}, Y=${this.bleBufferIMU_Y.length}, Z=${this.bleBufferIMU_Z.length}`);
         }
 
         const sampleSize = Math.min(1000, len);
@@ -2989,13 +3018,20 @@ class RadarWebApp {
         // 🔍 调试：验证传给图表的数据
         const iDataForChart = this.bleBufferI.slice(start);
         const qDataForChart = this.bleBufferQ.slice(start);
-        
+
         if (this.bleDataCount === 10) {
             console.log(`\n🎨 图表数据检查 (首次更新):`);
             console.log(`  start=${start}, sampleSize=${sampleSize}`);
             console.log(`  I数据长度=${iDataForChart.length}, 前5个:`, iDataForChart.slice(0, 5).map(v => v?.toFixed(4)));
             console.log(`  Q数据长度=${qDataForChart.length}, 前5个:`, qDataForChart.slice(0, 5).map(v => v?.toFixed(4)));
             console.log(`  Q数据包含0的数量: ${qDataForChart.filter(v => v === 0).length}`);
+            console.log(`  图表对象状态:`, {
+                iSignal: !!this.bleCharts.iSignal,
+                qSignal: !!this.bleCharts.qSignal,
+                constellation: !!this.bleCharts.constellation,
+                imu: !!this.bleCharts.imu,
+                temperature: !!this.bleCharts.temperature
+            });
         }
 
         // 更新 I 通道
@@ -3006,7 +3042,12 @@ class RadarWebApp {
                     { label: 'I通道', data: iDataForChart, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.2)', tension: 0.1, pointRadius: 0 }
                 ]
             };
-            this.bleCharts.iSignal.update('none');
+            this.bleCharts.iSignal.update();
+            if (this.bleDataCount === 10) {
+                console.log('✅ I通道图表已更新');
+            }
+        } else {
+            console.warn('❌ I通道图表对象不存在');
         }
 
         // 更新 Q 通道
@@ -3017,15 +3058,28 @@ class RadarWebApp {
                     { label: 'Q通道', data: qDataForChart, borderColor: 'rgb(255, 99, 132)', backgroundColor: 'rgba(255, 99, 132, 0.2)', tension: 0.1, pointRadius: 0 }
                 ]
             };
-            this.bleCharts.qSignal.update('none');
+            this.bleCharts.qSignal.update();
+            if (this.bleDataCount === 10) {
+                console.log('✅ Q通道图表已更新');
+            }
+        } else {
+            console.warn('❌ Q通道图表对象不存在');
         }
 
         const constellationSampleSize = Math.min(500, len);
         const step = Math.max(1, Math.floor(len / constellationSampleSize));
         const data = [];
         for (let i = start; i < len; i += step) data.push({ x: this.bleBufferI[i], y: this.bleBufferQ[i] });
-        this.bleCharts.constellation.data = { datasets: [ { label: 'I/Q数据点', data, backgroundColor: 'rgba(54, 162, 235, 0.6)', pointRadius: 2 } ] };
-        this.bleCharts.constellation.update();  // 移除 'none'，让图表真正刷新
+        // 更新星座图
+        if (this.bleCharts.constellation) {
+            this.bleCharts.constellation.data = { datasets: [ { label: 'I/Q数据点', data, backgroundColor: 'rgba(54, 162, 235, 0.6)', pointRadius: 2 } ] };
+            this.bleCharts.constellation.update();
+            if (this.bleDataCount === 10) {
+                console.log('✅ 星座图已更新');
+            }
+        } else {
+            console.warn('❌ 星座图对象不存在');
+        }
 
         // 更新 IMU 图表（gx/gy/gz）
         if (this.bleCharts.imu && this.bleBufferIMU_X.length > 0) {
@@ -3037,7 +3091,12 @@ class RadarWebApp {
                     { label: 'gz', data: this.bleBufferIMU_Z.slice(start), borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.08)', tension: 0.1, pointRadius: 0 }
                 ]
             };
-            this.bleCharts.imu.update();  // 移除 'none'，让图表真正刷新
+            this.bleCharts.imu.update();
+            if (this.bleDataCount === 10) {
+                console.log('✅ IMU图表已更新');
+            }
+        } else if (this.bleBufferIMU_X.length > 0) {
+            console.warn('❌ IMU图表对象不存在，但有IMU数据');
         }
 
         // 更新温度图表
@@ -3046,32 +3105,69 @@ class RadarWebApp {
             this.bleCharts.temperature.data = {
                 labels: indices,
                 datasets: [
-                    { 
-                        label: '温度 (°C)', 
-                        data: tempData, 
-                        borderColor: 'rgb(255, 159, 64)', 
-                        backgroundColor: 'rgba(255, 159, 64, 0.2)', 
+                    {
+                        label: '温度 (°C)',
+                        data: tempData,
+                        borderColor: 'rgb(255, 159, 64)',
+                        backgroundColor: 'rgba(255, 159, 64, 0.2)',
                         tension: 0.3,
                         pointRadius: 0,
                         fill: true
                     }
                 ]
             };
-            this.bleCharts.temperature.update();  // 移除 'none'，让图表真正刷新
-            
-            // 更新当前温度显示
-            if (tempData.length > 0) {
-                const currentTemp = tempData[tempData.length - 1];
-                const tempEl = document.getElementById('bleCurrentTemp');
-                const avgTempEl = document.getElementById('bleAvgTemp');
-                if (tempEl) {
-                    tempEl.textContent = `${currentTemp.toFixed(1)} °C`;
-                }
-                if (avgTempEl) {
-                    avgTempEl.textContent = `${currentTemp.toFixed(1)} °C`;
-                }
+            this.bleCharts.temperature.update();
+            if (this.bleDataCount === 10) {
+                console.log('✅ 温度图表已更新');
+            }
+        } else if (this.bleBufferTemperature.length > 0) {
+            console.warn('❌ 温度图表对象不存在，但有温度数据');
+        }
+
+        // 更新当前温度显示
+        if (tempData && tempData.length > 0) {
+            const currentTemp = tempData[tempData.length - 1];
+            const tempEl = document.getElementById('bleCurrentTemp');
+            const avgTempEl = document.getElementById('bleAvgTemp');
+            if (tempEl) {
+                tempEl.textContent = `${currentTemp.toFixed(1)} °C`;
+            }
+            if (avgTempEl) {
+                avgTempEl.textContent = `${currentTemp.toFixed(1)} °C`;
             }
         }
+    }
+
+    /**
+     * 强制重新初始化所有图表（用于调试蓝牙图表显示问题）
+     */
+    forceReinitializeCharts() {
+        console.log('🔄 强制重新初始化所有图表...');
+        console.log('当前图表状态:', {
+            iSignal: !!this.charts.iSignal,
+            qSignal: !!this.charts.qSignal,
+            bleISignal: !!this.bleCharts.iSignal,
+            bleQSignal: !!this.bleCharts.qSignal,
+            bleConstellation: !!this.bleCharts.constellation,
+            bleIMU: !!this.bleCharts.imu,
+            bleTemperature: !!this.bleCharts.temperature
+        });
+
+        this.initializeCharts();
+        this.initializeBluetoothCharts();
+
+        // 延迟刷新所有图表
+        setTimeout(() => {
+            const allCharts = [
+                ...Object.values(this.charts || {}),
+                ...Object.values(this.bleCharts || {})
+            ];
+            allCharts.forEach(chart => {
+                if (chart && typeof chart.resize === 'function') chart.resize();
+                if (chart && typeof chart.update === 'function') chart.update();
+            });
+            console.log('✅ 图表重新初始化完成');
+        }, 100);
     }
 
     /**
@@ -3590,21 +3686,31 @@ function startSimulationTest() {
     
     // 显示实时数据区域
     document.getElementById('bleRealTimeData').style.display = 'block';
-    
+
     // 自动展开图表区域并刷新（确保图表可见且尺寸正确）
     const chartsSection = document.getElementById('bluetoothChartsSection');
     if (chartsSection) {
         chartsSection.style.display = 'block';
         chartsSection.scrollIntoView({ behavior: 'smooth' });
+        console.log('✅ 模拟测试：蓝牙图表区域已展开');
     }
+
+    // 确保图表已初始化
+    if (!app.bleCharts.iSignal || !app.bleCharts.qSignal) {
+        console.log('🔄 模拟测试：重新初始化蓝牙图表...');
+        app.initializeBluetoothCharts();
+    }
+
     // 延迟触发布局更新，确保Canvas尺寸正确
     setTimeout(() => {
         if (app.bleCharts) {
+            console.log('📊 模拟测试：刷新所有蓝牙图表...');
             Object.values(app.bleCharts).forEach(chart => {
                 if (chart && typeof chart.resize === 'function') chart.resize();
+                if (chart && typeof chart.update === 'function') chart.update('none');
             });
         }
-    }, 100);
+    }, 200);
 
     app.updateBLEButtons();
     

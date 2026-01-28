@@ -114,6 +114,7 @@ class RadarWebApp {
         this.initializeBluetoothCharts();
         this.initializeBLEECG();
         this.initializeFileECG();
+        this.setupHealthChatUI();
         this.initializeHealthChat();
 
         // 初始化BLE事件
@@ -127,26 +128,75 @@ class RadarWebApp {
     }
 
     /**
-     * 初始化健康对话设置
+     * 健康对话：仅维护 host:port（协议由页面自动决定）
      */
-    initializeHealthChat() {
-        const chatAgentEndpointEl = document.getElementById('chatAgentEndpoint');
-        if (chatAgentEndpointEl) {
-            chatAgentEndpointEl.value = localStorage.getItem('chatAgentEndpoint') || 'http://localhost:9001';
-        }
+    getHealthChatAgentOrigin() {
+        // 关键：当页面为 https 时，浏览器会拦截任何 http 资源（混合内容）。
+        // 因此这里强制跟随页面协议：
+        // - 页面 http  -> 调用 http://129.204.169.52:9001
+        // - 页面 https -> 调用 https://129.204.169.52:9001（要求Agent支持HTTPS或由反代提供HTTPS）
+        const pageProto = window.location.protocol;
+        const proto = pageProto === 'https:' ? 'https:' : 'http:';
+        return `${proto}//129.204.169.52:9001`;
+    }
 
-        // 添加回车发送消息功能
+    setHealthChatStatus(state, detailText = '') {
+        const dot = document.getElementById('chatAgentStatusDot');
+        const text = document.getElementById('chatAgentStatusText');
+        const endpointText = document.getElementById('chatAgentEndpointText');
+
+        const origin = this.getHealthChatAgentOrigin();
+        if (endpointText) endpointText.textContent = origin;
+
+        if (dot) {
+            dot.classList.remove('connected', 'connecting', 'disconnected');
+            dot.classList.add(state);
+        }
+        if (text) {
+            const base =
+                state === 'connected' ? '已连接' :
+                state === 'connecting' ? '连接中' :
+                '未连接';
+            text.textContent = detailText ? `${base}（${detailText}）` : base;
+        }
+    }
+
+    async fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+            clearTimeout(t);
+        }
+    }
+
+    /**
+     * 初始化健康对话 UI（绑定键盘事件、填充endpoint显示等）
+     */
+    setupHealthChatUI() {
+        // 绑定 Enter 发送
         const chatInputEl = document.getElementById('chatInput');
         if (chatInputEl) {
             chatInputEl.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    if (!document.getElementById('sendChatBtn').disabled) {
+                    const sendBtn = document.getElementById('sendChatBtn');
+                    if (sendBtn && !sendBtn.disabled) {
                         this.sendChatMessage();
                     }
                 }
             });
         }
+
+        // 默认展示对话框（按钮只是“重新连接”）
+        const chatContainer = document.getElementById('chatContainer');
+        if (chatContainer) chatContainer.style.display = 'flex';
+
+        // 初始状态
+        this.setHealthChatStatus('disconnected');
+        const sendBtn = document.getElementById('sendChatBtn');
+        if (sendBtn) sendBtn.disabled = true;
     }
 
     /**
@@ -1623,25 +1673,43 @@ class RadarWebApp {
      * 初始化宠物健康对话
      */
     initializeHealthChat() {
-        const agentEndpoint = document.getElementById('chatAgentEndpoint').value.trim();
-        if (!agentEndpoint) {
-            this.showMessage('请设置Agent API地址', 'warning');
-            return;
-        }
+        const origin = this.getHealthChatAgentOrigin();
+        this.setHealthChatStatus('connecting');
 
-        // 保存endpoint到localStorage
-        localStorage.setItem('chatAgentEndpoint', agentEndpoint);
+        // 这里做一次健康检查，用于：
+        // 1) 给用户清晰的“已连接/未连接”反馈
+        // 2) HTTPS 页面下，如果 Agent 没有 HTTPS，会明确提示，而不是“发不出去”
+        this.fetchWithTimeout(`${origin}/health`, { method: 'GET' }, 6000)
+            .then(async (r) => {
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                await r.json().catch(() => null);
 
-        // 显示对话界面
-        document.getElementById('chatContainer').style.display = 'block';
-        document.getElementById('initChatBtn').style.display = 'none';
-        document.getElementById('clearChatBtn').style.display = 'inline-block';
-        document.getElementById('sendChatBtn').disabled = false;
+                this.setHealthChatStatus('connected');
+                const sendBtn = document.getElementById('sendChatBtn');
+                if (sendBtn) sendBtn.disabled = false;
 
-        // 加载历史对话
-        this.loadChatHistory();
+                // 加载历史对话（仅首次/每次重连都可以加载，体验更一致）
+                this.loadChatHistory();
 
-        this.showMessage('宠物健康对话已启动！', 'success');
+                this.showMessage('✅ 宠物健康对话已就绪', 'success');
+            })
+            .catch((e) => {
+                const sendBtn = document.getElementById('sendChatBtn');
+                if (sendBtn) sendBtn.disabled = true;
+
+                // 对 https 页面，重点提示“必须 https”
+                const isHttpsPage = window.location.protocol === 'https:';
+                if (isHttpsPage) {
+                    this.setHealthChatStatus('disconnected', '需要HTTPS');
+                    this.showMessage(
+                        '当前页面为 HTTPS，浏览器会拦截对 HTTP Agent 的请求。请让 Agent 也提供 HTTPS（推荐用域名+证书，或用 Nginx/Caddy 反代提供 HTTPS）。若使用自签证书，需要先在浏览器打开一次对应的 /health 页面并手动信任证书。',
+                        'warning'
+                    );
+                } else {
+                    this.setHealthChatStatus('disconnected');
+                    this.showMessage(`连接Agent失败：${e.message}`, 'warning');
+                }
+            });
     }
 
     /**
@@ -1655,7 +1723,7 @@ class RadarWebApp {
             return;
         }
 
-        const agentEndpoint = document.getElementById('chatAgentEndpoint').value.trim();
+        const agentEndpoint = this.getHealthChatAgentOrigin();
         const sendBtn = document.getElementById('sendChatBtn');
 
         // 添加用户消息到界面
@@ -1670,9 +1738,10 @@ class RadarWebApp {
         try {
             // 构建上下文信息
             const contextInfo = this.buildChatContext();
+            const historyContext = this.buildChatHistoryContext(12);
 
             // 构建完整查询
-            const fullQuery = `${contextInfo}\n\n用户问题: ${message}`;
+            const fullQuery = `${contextInfo}${historyContext}\n\n用户问题: ${message}`;
 
             // 调用agent API
             const response = await fetch(`${agentEndpoint}/agent/plan_and_solve`, {
@@ -1745,6 +1814,28 @@ class RadarWebApp {
     }
 
     /**
+     * 构建历史对话上下文（给 agent 用）
+     * 只取最近 N 条，避免 prompt 过长。
+     */
+    buildChatHistoryContext(maxMessages = 12) {
+        try {
+            const chatHistory = JSON.parse(localStorage.getItem('petHealthChatHistory') || '[]');
+            if (!Array.isArray(chatHistory) || chatHistory.length === 0) return '';
+
+            const recent = chatHistory.slice(Math.max(0, chatHistory.length - maxMessages));
+            const lines = recent
+                .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+                .map(m => `${m.role === 'user' ? '用户' : '助手'}: ${m.content.trim()}`)
+                .filter(s => s.length > 0);
+
+            if (lines.length === 0) return '';
+            return `\n\n历史对话（最近${lines.length}条）:\n${lines.join('\n')}`;
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /**
      * 添加聊天消息到界面
      */
     addChatMessage(role, content, isThinking = false) {
@@ -1789,10 +1880,55 @@ class RadarWebApp {
     formatChatMessage(text) {
         if (!text) return '';
 
-        return text
-            .replace(/\n/g, '<br/>')
-            .replace(/(\d+)\.\s/g, '<br/>$1. ')
-            .replace(/^(\d+)\.\s/gm, '<br/>$1. ');
+        // 优先用 Markdown 渲染（marked）并进行 XSS 安全净化（DOMPurify）
+        // 说明：Agent 返回的 answer 通常包含列表/加粗/引用/代码块等，直接渲染能显著提升观感。
+        try {
+            const hasMarked = typeof window.marked !== 'undefined' && window.marked && typeof window.marked.parse === 'function';
+            const hasPurify = typeof window.DOMPurify !== 'undefined' && window.DOMPurify && typeof window.DOMPurify.sanitize === 'function';
+
+            if (hasMarked) {
+                // marked 默认不做净化，所以必须配合 DOMPurify
+                const rawHtml = window.marked.parse(String(text), {
+                    gfm: true,
+                    breaks: true,
+                });
+                if (hasPurify) {
+                    return window.DOMPurify.sanitize(rawHtml, {
+                        // 允许常见 Markdown 标签
+                        ALLOWED_TAGS: [
+                            'p', 'br', 'strong', 'em', 'del',
+                            'ul', 'ol', 'li',
+                            'blockquote',
+                            'pre', 'code',
+                            'hr',
+                            'a',
+                            'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                            'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                        ],
+                        ALLOWED_ATTR: ['href', 'title', 'target', 'rel'],
+                    });
+                }
+                // 没有 DOMPurify 时退化：转义为纯文本，避免 XSS
+                const escaped = String(text)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+                return escaped.replace(/\n/g, '<br/>');
+            }
+        } catch (e) {
+            // ignore and fallback
+        }
+
+        // 兜底：纯文本 + 换行
+        const escaped = String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        return escaped.replace(/\n/g, '<br/>');
     }
 
     /**
@@ -3824,36 +3960,61 @@ class RadarWebApp {
 }
 
 // 全局函数供HTML调用
-let app;
+// 使用 var 让它同时挂到 window（方便调试，也避免部分环境下全局可见性差异）
+var app = null;
+window.app = null;
+
+function _requireApp() {
+    const a = window.app || app;
+    if (!a) {
+        console.warn('应用尚未初始化或初始化失败，请查看控制台错误日志');
+        alert('应用尚未初始化或初始化失败（请查看控制台 Console 日志），建议刷新页面后重试。');
+        return null;
+    }
+    return a;
+}
 
 // 页面加载完成后初始化应用
 document.addEventListener('DOMContentLoaded', () => {
-    app = new RadarWebApp();
+    try {
+        app = new RadarWebApp();
+        window.app = app;
+    } catch (e) {
+        console.error('❌ RadarWebApp 初始化失败:', e);
+        app = null;
+        window.app = null;
+    }
 });
 
 // 供HTML按钮调用的全局函数
 function processFiles() {
-    app.processFiles();
+    const a = _requireApp();
+    if (a) a.processFiles();
 }
 
 function clearFiles() {
-    app.clearFiles();
+    const a = _requireApp();
+    if (a) a.clearFiles();
 }
 
 function exportResults() {
-    app.exportResults();
+    const a = _requireApp();
+    if (a) a.exportResults();
 }
 
 function exportCharts() {
-    app.exportCharts();
+    const a = _requireApp();
+    if (a) a.exportCharts();
 }
 
 function toggleSettings() {
-    app.toggleSettings();
+    const a = _requireApp();
+    if (a) a.toggleSettings();
 }
 
 function applySettings() {
-    if (app && typeof app.applySettings === 'function') app.applySettings();
+    const a = _requireApp();
+    if (a && typeof a.applySettings === 'function') a.applySettings();
 }
 
 // 连接诊断：生成诊断JSON并复制到剪贴板（方便你粘贴给我分析）
@@ -4291,24 +4452,29 @@ async function bleAzureDiagnose() {
 
 // 宠物健康分析相关全局函数
 function performHealthAnalysis() {
-    app.performHealthAnalysis();
+    const a = _requireApp();
+    if (a) a.performHealthAnalysis();
 }
 
 function exportHealthReport() {
-    app.exportHealthReport();
+    const a = _requireApp();
+    if (a) a.exportHealthReport();
 }
 
 // 宠物健康对话相关全局函数
 function initializeHealthChat() {
-    app.initializeHealthChat();
+    const a = _requireApp();
+    if (a) a.initializeHealthChat();
 }
 
 function sendChatMessage() {
-    app.sendChatMessage();
+    const a = _requireApp();
+    if (a) a.sendChatMessage();
 }
 
 function clearChatHistory() {
-    app.clearChatHistory();
+    const a = _requireApp();
+    if (a) a.clearChatHistory();
 }
 
 // ===== 活动量与步数监测模块控制函数 =====

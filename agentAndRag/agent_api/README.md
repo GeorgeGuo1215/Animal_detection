@@ -18,6 +18,29 @@ pip install -r lora/requirements.txt
 python -m uvicorn agent_api.app.main:app --host 127.0.0.1 --port 8000
 ```
 
+#### 2.1）解决“HTTPS 页面调用 HTTP Agent 被浏览器拦截（Mixed Content）”
+
+你的 `web/` 会通过 GitHub Pages 以 **HTTPS** 方式部署，而浏览器会 **强制拦截** 从 HTTPS 页面发往 HTTP 的请求（即使 CORS 全开也没用）。
+
+因此生产环境要么：
+
+- **让 Agent 也提供 HTTPS**（推荐：用域名 + 证书；或用 Nginx/Caddy 反代提供 HTTPS）
+- 或者 **让 Web 与 Agent 同源（同域同协议）**，由反代把 `/agent/*` 转发到本机 HTTP 端口（浏览器只看到 HTTPS）
+
+本项目提供了一个更方便的启动入口：当配置证书路径时自动走 HTTPS：
+
+Windows CMD 示例：
+
+```bat
+set AGENT_HOST=0.0.0.0
+set AGENT_PORT=9001
+set AGENT_SSL_CERTFILE=fullchain.pem
+set AGENT_SSL_KEYFILE=privkey.pem
+python -m agent_api.app.serve
+```
+
+如果不设置 `AGENT_SSL_CERTFILE/AGENT_SSL_KEYFILE`，则默认以 HTTP 启动。
+
 #### 启动时预热 RAG 缓存
 
 默认不预热

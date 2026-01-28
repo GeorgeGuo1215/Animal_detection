@@ -99,7 +99,15 @@ class RadarWebApp {
         // 当前心率和呼吸率（供静息监测模块使用）
         this.currentHeartRate = null;
         this.currentRespiratoryRate = null;
-        
+
+        // ===== 活动量与步数监测模块 =====
+        this.activityMonitor = null;
+        this.activityMonitorEnabled = false;
+
+        // ===== 睡眠质量监测模块 =====
+        this.sleepMonitor = null;
+        this.sleepMonitorEnabled = false;
+
         this.initializeEventListeners();
         this.initBleUploadConfig();
         this.initializeCharts();
@@ -379,6 +387,18 @@ class RadarWebApp {
         }
         if (restingClearBtn) {
             restingClearBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
+        }
+
+        // 活动监测按钮
+        const activityStartBtn = document.getElementById('activityStartBtn');
+        if (activityStartBtn) {
+            activityStartBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
+        }
+
+        // 睡眠监测按钮
+        const sleepStartBtn = document.getElementById('sleepStartBtn');
+        if (sleepStartBtn) {
+            sleepStartBtn.style.display = this.bleConnected ? 'inline-block' : 'none';
         }
     }
 
@@ -869,7 +889,17 @@ class RadarWebApp {
         this.bleBufferIMU_X.push(Number.isFinite(imuX) ? imuX : 0);
         this.bleBufferIMU_Y.push(Number.isFinite(imuY) ? imuY : 0);
         this.bleBufferIMU_Z.push(Number.isFinite(imuZ) ? imuZ : 0);
-        
+
+        // ===== 活动量监测：将加速度数据传递给ActivityMonitor =====
+        if (this.activityMonitorEnabled && this.activityMonitor && accX !== null && accY !== null && accZ !== null) {
+            this.activityMonitor.addAccelerometerData(accX, accY, accZ, Date.now());
+        }
+
+        // 睡眠监测模块：使用加速度计数据
+        if (this.sleepMonitorEnabled && this.sleepMonitor && accX !== null && accY !== null && accZ !== null) {
+            this.sleepMonitor.addAccelerometerData(accX, accY, accZ, Date.now());
+        }
+
         // 温度数据：只有当设备发送了温度数据时才更新，否则使用null表示无数据
         if (temperature !== null && Number.isFinite(temperature)) {
             this.bleBufferTemperature.push(temperature);
@@ -3496,15 +3526,17 @@ class RadarWebApp {
         }
 
         // 更新当前温度显示
-        if (tempData && tempData.length > 0) {
-            const currentTemp = tempData[tempData.length - 1];
-            const tempEl = document.getElementById('bleCurrentTemp');
-            const avgTempEl = document.getElementById('bleAvgTemp');
-            if (tempEl) {
-                tempEl.textContent = `${currentTemp.toFixed(1)} °C`;
-            }
-            if (avgTempEl) {
-                avgTempEl.textContent = `${currentTemp.toFixed(1)} °C`;
+        if (validTempData && validTempData.length > 0) {
+            const currentTemp = validTempData[validTempData.length - 1];
+            if (currentTemp !== null) {
+                const tempEl = document.getElementById('bleCurrentTemp');
+                const avgTempEl = document.getElementById('bleAvgTemp');
+                if (tempEl) {
+                    tempEl.textContent = `${currentTemp.toFixed(1)} °C`;
+                }
+                if (avgTempEl) {
+                    avgTempEl.textContent = `${currentTemp.toFixed(1)} °C`;
+                }
             }
         }
     }
@@ -4277,3 +4309,494 @@ function sendChatMessage() {
 function clearChatHistory() {
     app.clearChatHistory();
 }
+
+// ===== 活动量与步数监测模块控制函数 =====
+
+/**
+ * 开始活动监测
+ */
+function startActivityMonitor() {
+    if (!app) {
+        alert('应用未初始化');
+        return;
+    }
+
+    console.log('🎯 开始活动监测...');
+
+    // 先显示仪表板，确保DOM元素存在
+    document.getElementById('activityDashboard').style.display = 'block';
+
+    // 更新按钮状态
+    document.getElementById('activityStartBtn').style.display = 'none';
+    document.getElementById('activityStopBtn').style.display = 'inline-block';
+    document.getElementById('activityResetBtn').style.display = 'inline-block';
+
+    // 延迟初始化，确保DOM已渲染
+    setTimeout(() => {
+        // 初始化ActivityMonitor
+        if (!app.activityMonitor) {
+            console.log('📊 创建ActivityMonitor实例...');
+
+            // 从输入框读取体重和目标值
+            const petWeight = parseFloat(document.getElementById('petWeight').value) || 10.0;
+            const stepsGoal = parseInt(document.getElementById('activityStepsGoal').value) || 1000;
+            const activityGoal = parseFloat(document.getElementById('activityENMOGoal').value) || 2.0;
+            const calorieGoal = parseFloat(document.getElementById('activityCalorieGoal').value) || 100;
+
+            app.activityMonitor = new ActivityMonitor(app.processor.fs, petWeight);
+            app.activityMonitor.dailyGoal = stepsGoal;
+            app.activityMonitor.activityGoal = activityGoal;
+            app.activityMonitor.calorieGoal = calorieGoal;
+
+            updateActivityGoalDisplay();
+
+            // 初始化图表（在DOM渲染后）
+            console.log('🎨 初始化图表...');
+            app.activityMonitor.initializeCharts();
+        }
+
+        app.activityMonitorEnabled = true;
+        activityLog('✅ 活动监测已启动');
+    }, 100); // 100ms延迟确保DOM已渲染
+}
+
+/**
+ * 停止活动监测
+ */
+function stopActivityMonitor() {
+    if (!app) return;
+
+    app.activityMonitorEnabled = false;
+
+    // 更新按钮状态
+    document.getElementById('activityStartBtn').style.display = 'inline-block';
+    document.getElementById('activityStopBtn').style.display = 'none';
+
+    activityLog('⏹️ 活动监测已停止');
+}
+
+/**
+ * 重置今日数据
+ */
+function resetActivityData() {
+    if (!app || !app.activityMonitor) return;
+
+    if (confirm('确定要重置今日的活动数据吗？')) {
+        app.activityMonitor.resetDailyData();
+        activityLog('🔄 今日数据已重置');
+    }
+}
+
+/**
+ * 更新活动目标
+ */
+function updateActivityGoals() {
+    if (!app || !app.activityMonitor) return;
+
+    const petWeight = parseFloat(document.getElementById('petWeight').value) || 10.0;
+    const stepsGoal = parseInt(document.getElementById('activityStepsGoal').value) || 1000;
+    const activityGoal = parseFloat(document.getElementById('activityENMOGoal').value) || 2.0;
+    const calorieGoal = parseFloat(document.getElementById('activityCalorieGoal').value) || 100;
+
+    // 更新体重会重新计算RER
+    app.activityMonitor.petWeight = petWeight;
+    app.activityMonitor.rerDaily = 70 * Math.pow(petWeight, 0.75);
+    app.activityMonitor.bmrPerSec = app.activityMonitor.rerDaily / 86400.0;
+
+    app.activityMonitor.dailyGoal = stepsGoal;
+    app.activityMonitor.activityGoal = activityGoal;
+    app.activityMonitor.calorieGoal = calorieGoal;
+    app.activityMonitor.updateCharts();
+
+    updateActivityGoalDisplay();
+    activityLog(`🎯 目标已更新: 体重=${petWeight}kg, 步数=${stepsGoal}, 活动量=${activityGoal.toFixed(1)}, 卡路里=${calorieGoal}kcal`);
+}
+
+/**
+ * 更新目标显示
+ */
+function updateActivityGoalDisplay() {
+    document.getElementById('displayStepsGoal').textContent =
+        document.getElementById('activityStepsGoal').value;
+    document.getElementById('displayActivityGoal').textContent =
+        document.getElementById('activityENMOGoal').value;
+    document.getElementById('displayCalorieGoal').textContent =
+        document.getElementById('activityCalorieGoal').value;
+}
+
+/**
+ * 活动日志输出
+ */
+function activityLog(message) {
+    const logDiv = document.getElementById('activityLog');
+    if (!logDiv) return;
+
+    const timestamp = new Date().toLocaleTimeString();
+    logDiv.innerHTML += `[${timestamp}] ${message}<br>`;
+    logDiv.scrollTop = logDiv.scrollHeight;
+}
+
+// ===== 睡眠监测控制函数 =====
+
+/**
+ * 开始睡眠监测
+ */
+function startSleepMonitor() {
+    if (!app) {
+        alert('应用未初始化');
+        return;
+    }
+
+    console.log('😴 开始睡眠监测...');
+    console.log('📊 蓝牙连接状态:', app.bleConnected);
+    console.log('📊 活动监测状态:', app.activityMonitorEnabled);
+
+    // 更新按钮状态
+    document.getElementById('sleepStartBtn').style.display = 'none';
+    document.getElementById('sleepStopBtn').style.display = 'inline-block';
+
+    // 延迟初始化，确保DOM已渲染
+    setTimeout(() => {
+        // 初始化SleepMonitor
+        if (!app.sleepMonitor) {
+            console.log('📊 创建SleepMonitor实例...');
+
+            // 从输入框读取体重（如果有的话，否则使用默认值）
+            const petWeight = parseFloat(document.getElementById('petWeight')?.value) || 10.0;
+
+            app.sleepMonitor = new SleepMonitor(app.processor.fs, petWeight);
+
+            // 初始化图表（在DOM渲染后）
+            console.log('🎨 初始化睡眠监测图表...');
+            app.sleepMonitor.initializeCharts();
+        }
+
+        app.sleepMonitorEnabled = true;
+        console.log('✅ 睡眠监测已启用，等待数据...');
+        sleepLog('✅ 睡眠监测已启动');
+
+        // 启动定时更新
+        startSleepMonitorUpdates();
+    }, 100); // 100ms延迟确保DOM已渲染
+}
+
+/**
+ * 停止睡眠监测
+ */
+function stopSleepMonitor() {
+    if (!app) return;
+
+    app.sleepMonitorEnabled = false;
+
+    // 更新按钮状态
+    document.getElementById('sleepStartBtn').style.display = 'inline-block';
+    document.getElementById('sleepStopBtn').style.display = 'none';
+
+    // 停止定时更新
+    if (app.sleepMonitorUpdateTimer) {
+        clearInterval(app.sleepMonitorUpdateTimer);
+        app.sleepMonitorUpdateTimer = null;
+    }
+
+    sleepLog('⏹️ 睡眠监测已停止');
+}
+
+/**
+ * 重置睡眠数据
+ */
+function resetSleepData() {
+    if (!app || !app.sleepMonitor) return;
+
+    if (confirm('确定要重置睡眠数据吗？')) {
+        app.sleepMonitor.reset();
+        updateSleepDisplay();
+        sleepLog('🔄 睡眠数据已重置');
+    }
+}
+
+/**
+ * 生成睡眠报告
+ */
+function generateSleepReport() {
+    if (!app || !app.sleepMonitor) {
+        alert('请先启动睡眠监测');
+        return;
+    }
+
+    const report = app.sleepMonitor.generateSleepReport();
+
+    // 创建报告弹窗
+    const reportHTML = `
+        <div style="text-align: left; max-height: 500px; overflow-y: auto;">
+            <h3>😴 睡眠质量报告</h3>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <h4>📊 总体评分</h4>
+                <div style="font-size: 24px; color: ${report.qualityScore >= 80 ? '#34C759' : report.qualityScore >= 60 ? '#FF9500' : '#FF3B30'};">
+                    ${report.qualityScore}分 - ${report.qualityLevel}
+                </div>
+            </div>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <h4>⏱️ 睡眠时长</h4>
+                <p>总睡眠时间: ${(report.totalSleepTime / 60).toFixed(1)}分钟</p>
+                <p>深睡: ${(report.deepSleepTime / 60).toFixed(1)}分钟 (${report.deepSleepRatio.toFixed(1)}%)</p>
+                <p>浅睡: ${(report.lightSleepTime / 60).toFixed(1)}分钟</p>
+                <p>REM: ${(report.remSleepTime / 60).toFixed(1)}分钟 (${report.remSleepRatio.toFixed(1)}%)</p>
+                <p>清醒: ${(report.awakeTime / 60).toFixed(1)}分钟</p>
+            </div>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <h4>💤 睡眠质量</h4>
+                <p>睡眠效率: ${report.sleepEfficiency.toFixed(1)}%</p>
+                <p>翻身次数: ${report.turnOverCount}次</p>
+                <p>翻身频率: ${report.turnOverRate.toFixed(1)}次/小时</p>
+            </div>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <h4>💡 建议</h4>
+                ${report.recommendations.map(r => `<p>• ${r}</p>`).join('')}
+            </div>
+        </div>
+    `;
+
+    // 显示报告
+    const reportWindow = window.open('', '睡眠报告', 'width=600,height=700');
+    reportWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>睡眠质量报告</title>
+            <meta charset="UTF-8">
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; }
+                h3 { color: #333; }
+                h4 { color: #666; margin-top: 0; }
+            </style>
+        </head>
+        <body>
+            ${reportHTML}
+            <button onclick="window.print()" style="margin-top: 20px; padding: 10px 20px; background: #007AFF; color: white; border: none; border-radius: 8px; cursor: pointer;">
+                🖨️ 打印报告
+            </button>
+        </body>
+        </html>
+    `);
+}
+
+/**
+ * 启动睡眠监测定时更新
+ */
+function startSleepMonitorUpdates() {
+    // 每2秒更新一次显示
+    if (app.sleepMonitorUpdateTimer) {
+        clearInterval(app.sleepMonitorUpdateTimer);
+    }
+
+    app.sleepMonitorUpdateTimer = setInterval(() => {
+        if (app.sleepMonitorEnabled && app.sleepMonitor) {
+            updateSleepDisplay();
+            app.sleepMonitor.updateCharts();
+        }
+    }, 2000);
+}
+
+/**
+ * 更新睡眠显示
+ */
+function updateSleepDisplay() {
+    if (!app || !app.sleepMonitor) {
+        console.log('⚠️ 睡眠监测器未初始化');
+        return;
+    }
+
+    const summary = app.sleepMonitor.getSummary();
+    console.log('📊 更新睡眠显示:', {
+        currentRMS: summary.currentRMS,
+        currentMCR: summary.currentMCR,
+        stage: summary.currentStageName,
+        dataRate: summary.dataRate
+    });
+
+    // 更新当前状态
+    const stageElement = document.getElementById('sleepCurrentStage');
+    if (stageElement) {
+        stageElement.textContent = summary.currentStageName;
+    } else {
+        console.error('❌ 找不到元素: sleepCurrentStage');
+    }
+
+    const bedStatusElement = document.getElementById('sleepInBedStatus');
+    if (bedStatusElement) {
+        bedStatusElement.textContent = summary.isInBed ? '在床上' : '未在床上';
+    }
+
+    // 更新睡眠时长
+    const sleepMinutes = (summary.sleepDuration / 60).toFixed(0);
+    const durationElement = document.getElementById('sleepDuration');
+    if (durationElement) {
+        durationElement.textContent = `${sleepMinutes}分钟`;
+    }
+
+    if (summary.sleepStartTime) {
+        const startTime = new Date(summary.sleepStartTime).toLocaleTimeString();
+        const startTimeElement = document.getElementById('sleepStartTime');
+        if (startTimeElement) {
+            startTimeElement.textContent = `开始于 ${startTime}`;
+        }
+    } else {
+        const startTimeElement = document.getElementById('sleepStartTime');
+        if (startTimeElement) {
+            startTimeElement.textContent = '未开始';
+        }
+    }
+
+    // 更新睡眠效率
+    const efficiencyElement = document.getElementById('sleepEfficiency');
+    if (efficiencyElement) {
+        efficiencyElement.textContent = `${summary.sleepEfficiency.toFixed(1)}%`;
+    }
+
+    // 更新翻身次数
+    const turnOverElement = document.getElementById('sleepTurnOverCount');
+    if (turnOverElement) {
+        turnOverElement.textContent = `${summary.turnOverCount}次`;
+    }
+
+    // 更新睡眠统计
+    const deepTimeElement = document.getElementById('sleepDeepTime');
+    if (deepTimeElement) {
+        deepTimeElement.textContent = `${(summary.deepSleepTime / 60).toFixed(0)}分钟`;
+    }
+
+    const lightTimeElement = document.getElementById('sleepLightTime');
+    if (lightTimeElement) {
+        lightTimeElement.textContent = `${(summary.lightSleepTime / 60).toFixed(0)}分钟`;
+    }
+
+    const remTimeElement = document.getElementById('sleepREMTime');
+    if (remTimeElement) {
+        remTimeElement.textContent = `${(summary.remSleepTime / 60).toFixed(0)}分钟`;
+    }
+
+    const awakeTimeElement = document.getElementById('sleepAwakeTime');
+    if (awakeTimeElement) {
+        awakeTimeElement.textContent = `${(summary.awakeTime / 60).toFixed(0)}分钟`;
+    }
+
+    // 更新实时关键指标
+    // RMS能量
+    const rmsElement = document.getElementById('sleepCurrentRMS');
+    if (rmsElement) {
+        rmsElement.textContent = `${summary.currentRMS.toFixed(3)}g`;
+        console.log('✅ 更新RMS:', summary.currentRMS.toFixed(3));
+    } else {
+        console.error('❌ 找不到元素: sleepCurrentRMS');
+    }
+
+    const rmsStatusElement = document.getElementById('sleepRMSStatus');
+    if (rmsStatusElement) {
+        let rmsStatus = '静息';
+        if (summary.currentRMS > 0.15) rmsStatus = '剧烈活动';
+        else if (summary.currentRMS > 0.05) rmsStatus = '活动中';
+        else if (summary.currentRMS > 0.02) rmsStatus = '轻微活动';
+        rmsStatusElement.textContent = rmsStatus;
+    }
+
+    // MCR零交叉率
+    const mcrElement = document.getElementById('sleepCurrentMCR');
+    if (mcrElement) {
+        mcrElement.textContent = `${summary.currentMCR.toFixed(1)}次/秒`;
+        console.log('✅ 更新MCR:', summary.currentMCR.toFixed(1));
+    } else {
+        console.error('❌ 找不到元素: sleepCurrentMCR');
+    }
+
+    const mcrStatusElement = document.getElementById('sleepMCRStatus');
+    if (mcrStatusElement) {
+        let mcrStatus = '低频';
+        if (summary.currentMCR > 8) mcrStatus = '高频';
+        else if (summary.currentMCR > 5) mcrStatus = '中高频';
+        else if (summary.currentMCR > 2) mcrStatus = '中频';
+        mcrStatusElement.textContent = mcrStatus;
+    }
+
+    // 阶段持续时间
+    const stageDurationMin = (summary.stageDuration / 60).toFixed(1);
+    const stageDurationElement = document.getElementById('sleepStageDuration');
+    if (stageDurationElement) {
+        stageDurationElement.textContent = `${stageDurationMin}分钟`;
+    } else {
+        console.error('❌ 找不到元素: sleepStageDuration');
+    }
+
+    const lastStageChangeElement = document.getElementById('sleepLastStageChange');
+    if (lastStageChangeElement) {
+        if (summary.stageDuration < 60) {
+            lastStageChangeElement.textContent = '刚切换';
+        } else {
+            lastStageChangeElement.textContent = `持续${stageDurationMin}分钟`;
+        }
+    }
+
+    // 数据更新率
+    const dataRateElement = document.getElementById('sleepDataRate');
+    if (dataRateElement) {
+        dataRateElement.textContent = `${summary.dataRate.toFixed(1)} Hz`;
+        console.log('✅ 更新数据率:', summary.dataRate.toFixed(1));
+    } else {
+        console.error('❌ 找不到元素: sleepDataRate');
+    }
+
+    const lastUpdateElement = document.getElementById('sleepLastUpdate');
+    if (lastUpdateElement) {
+        if (summary.lastUpdateTime) {
+            const timeSinceUpdate = (Date.now() - summary.lastUpdateTime) / 1000;
+            if (timeSinceUpdate < 2) {
+                lastUpdateElement.textContent = '实时更新中';
+            } else {
+                lastUpdateElement.textContent = `${timeSinceUpdate.toFixed(0)}秒前`;
+            }
+        } else {
+            lastUpdateElement.textContent = '等待数据';
+        }
+    }
+}
+
+/**
+ * 睡眠日志输出
+ */
+function sleepLog(message) {
+    const logDiv = document.getElementById('sleepEventLog');
+    if (!logDiv) return;
+
+    const timestamp = new Date().toLocaleTimeString();
+    logDiv.innerHTML += `[${timestamp}] ${message}<br>`;
+    logDiv.scrollTop = logDiv.scrollHeight;
+}
+
+// 页面加载时显示活动监测按钮
+window.addEventListener('DOMContentLoaded', () => {
+    // 当蓝牙连接成功后，显示活动监测开始按钮
+    const observer = new MutationObserver(() => {
+        const bleDisconnectBtn = document.getElementById('bleDisconnectBtn');
+        if (bleDisconnectBtn && bleDisconnectBtn.style.display !== 'none') {
+            // 蓝牙已连接，显示活动监测按钮
+            const activityStartBtn = document.getElementById('activityStartBtn');
+            if (activityStartBtn) {
+                activityStartBtn.style.display = 'inline-block';
+            }
+
+            // 显示睡眠监测按钮
+            const sleepStartBtn = document.getElementById('sleepStartBtn');
+            if (sleepStartBtn) {
+                sleepStartBtn.style.display = 'inline-block';
+            }
+        }
+    });
+
+    const bleDisconnectBtn = document.getElementById('bleDisconnectBtn');
+    if (bleDisconnectBtn) {
+        observer.observe(bleDisconnectBtn, { attributes: true, attributeFilter: ['style'] });
+    }
+});

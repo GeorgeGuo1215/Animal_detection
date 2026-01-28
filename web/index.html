@@ -101,7 +101,7 @@
             <section class="upload-section resting-section">
                 <h2>🛌 静息心率呼吸率长期监测</h2>
                 <p class="section-desc">
-                    系统将通过 IMU 数据自动判断用户是否处于静息状态，只在静息时记录心率和呼吸率
+                    系统将通过活动监测模块自动判断宠物是否处于静息状态，只在静息时记录心率和呼吸率
                 </p>
                 
                 <!-- 控制按钮 -->
@@ -149,7 +149,47 @@
                             <div class="resting-stat-value" id="restingAvgRR" style="color:#28a745;">-- bpm</div>
                         </div>
                     </div>
-                    
+
+                    <!-- 实时静息数据 -->
+                    <div class="resting-info-box" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; margin-top: 20px;">
+                        <strong>💓 实时静息数据</strong>
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 15px;">
+                            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                                <div style="font-size: 12px; opacity: 0.9;">当前心率</div>
+                                <div id="restingCurrentHR" style="font-size: 24px; font-weight: bold; margin: 5px 0;">-- bpm</div>
+                                <div style="font-size: 11px; opacity: 0.8;">静息状态</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                                <div style="font-size: 12px; opacity: 0.9;">当前呼吸</div>
+                                <div id="restingCurrentRR" style="font-size: 24px; font-weight: bold; margin: 5px 0;">-- bpm</div>
+                                <div style="font-size: 11px; opacity: 0.8;">静息状态</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                                <div style="font-size: 12px; opacity: 0.9;">最后更新</div>
+                                <div id="restingLastUpdate" style="font-size: 24px; font-weight: bold; margin: 5px 0;">--:--:--</div>
+                                <div style="font-size: 11px; opacity: 0.8;">时间</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 实时静息心率图 -->
+                    <div class="resting-stat-card" style="grid-column: span 2; margin-top: 20px;">
+                        <h4>📈 实时静息心率</h4>
+                        <canvas id="restingRealtimeHRChart" style="max-height: 250px;"></canvas>
+                    </div>
+
+                    <!-- 每分钟静息心率图 -->
+                    <div class="resting-stat-card" style="grid-column: span 2;">
+                        <h4>⏱️ 每分钟静息心率</h4>
+                        <canvas id="restingMinuteHRChart" style="max-height: 250px;"></canvas>
+                    </div>
+
+                    <!-- 每小时静息心率图 -->
+                    <div class="resting-stat-card" style="grid-column: span 2;">
+                        <h4>🕐 每小时静息心率</h4>
+                        <canvas id="restingHourlyHRChart" style="max-height: 250px;"></canvas>
+                    </div>
+
                     <!-- 参数说明 -->
                     <div class="resting-info-box">
                         <p>
@@ -164,6 +204,256 @@
                     <!-- 日志区域 -->
                     <div class="resting-log-container">
                         <div id="restingLog"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 活动量与步数监测模块 -->
+            <section class="upload-section activity-section">
+                <h2>🏃 活动量与步数监测</h2>
+                <p class="section-desc">
+                    基于IMU加速度计数据，实时计算活动量(ENMO)、步数和卡路里消耗，提供可视化展示
+                </p>
+
+                <!-- 控制按钮 -->
+                <div class="file-actions">
+                    <button class="btn btn-success" id="activityStartBtn" onclick="startActivityMonitor()" style="display:none;">
+                        🎯 开始活动监测
+                    </button>
+                    <button class="btn btn-danger" id="activityStopBtn" onclick="stopActivityMonitor()" style="display:none;">
+                        ⏹️ 停止监测
+                    </button>
+                    <button class="btn btn-warning" id="activityResetBtn" onclick="resetActivityData()" style="display:none;">
+                        🔄 重置今日数据
+                    </button>
+                    <div style="display:inline-block; margin-left: 20px;">
+                        <label>宠物体重(kg):</label>
+                        <input type="number" id="petWeight" value="10.0" min="1" max="100" step="0.5" style="width:80px; padding:5px;">
+                        <label style="margin-left:10px;">步数目标:</label>
+                        <input type="number" id="activityStepsGoal" value="1000" min="100" step="100" style="width:100px; padding:5px;">
+                        <label style="margin-left:10px;">活动量目标:</label>
+                        <input type="number" id="activityENMOGoal" value="2.0" min="0.5" max="10" step="0.5" style="width:100px; padding:5px;">
+                        <label style="margin-left:10px;">卡路里目标(kcal):</label>
+                        <input type="number" id="activityCalorieGoal" value="100" min="10" max="500" step="10" style="width:100px; padding:5px;">
+                        <button class="btn btn-primary" onclick="updateActivityGoals()" style="margin-left:10px;">更新目标</button>
+                    </div>
+                </div>
+
+                <!-- 活动环和统计 -->
+                <div id="activityDashboard" style="display:none;">
+                    <!-- 活动环区域 -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 20px 0;">
+                        <div class="resting-stat-card" style="text-align: center; padding: 24px;">
+                            <div style="font-size: 14px; color: #86868b; margin-bottom: 16px;">步数</div>
+                            <div style="position: relative; width: 180px; height: 180px; margin: 0 auto;">
+                                <canvas id="activityStepsRingChart"></canvas>
+                                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; font-weight: 700;" id="activityStepsPercent">0%</div>
+                            </div>
+                            <div style="font-size: 32px; font-weight: 700; margin-top: 16px;" id="activityTotalSteps">0</div>
+                            <div style="font-size: 14px; color: #86868b;">目标: <span id="displayStepsGoal">1000</span> 步</div>
+                        </div>
+
+                        <div class="resting-stat-card" style="text-align: center; padding: 24px;">
+                            <div style="font-size: 14px; color: #86868b; margin-bottom: 16px;">活动量 (ENMO)</div>
+                            <div style="position: relative; width: 180px; height: 180px; margin: 0 auto;">
+                                <canvas id="activityENMORingChart"></canvas>
+                                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; font-weight: 700;" id="activityENMOPercent">0%</div>
+                            </div>
+                            <div style="font-size: 32px; font-weight: 700; margin-top: 16px;" id="activityTotalENMO">0.00</div>
+                            <div style="font-size: 14px; color: #86868b;">目标: <span id="displayActivityGoal">2.0</span></div>
+                        </div>
+
+                        <div class="resting-stat-card" style="text-align: center; padding: 24px;">
+                            <div style="font-size: 14px; color: #86868b; margin-bottom: 16px;">卡路里消耗</div>
+                            <div style="position: relative; width: 180px; height: 180px; margin: 0 auto;">
+                                <canvas id="activityCalorieRingChart"></canvas>
+                                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; font-weight: 700;" id="activityCaloriePercent">0%</div>
+                            </div>
+                            <div style="font-size: 32px; font-weight: 700; margin-top: 16px;" id="activityTotalCalories">0.00</div>
+                            <div style="font-size: 14px; color: #86868b;">目标: <span id="displayCalorieGoal">100</span> kcal</div>
+                            <div style="font-size: 12px; color: #86868b; margin-top: 8px;">METs: <span id="activityCurrentMETs">1.0</span></div>
+                        </div>
+
+                        <div class="resting-stat-card" style="padding: 24px;">
+                            <div style="font-size: 14px; color: #86868b; margin-bottom: 8px;">当前活动强度</div>
+                            <div style="font-size: 28px; font-weight: 700; margin-bottom: 16px;" id="activityCurrentIntensity">静息</div>
+                            <div style="font-size: 14px; color: #86868b; margin-bottom: 4px;">宠物体重</div>
+                            <div style="font-size: 18px; font-weight: 600; margin-bottom: 12px;" id="activityPetWeight">10.0 kg</div>
+                            <div style="font-size: 14px; color: #86868b; margin-bottom: 4px;">基础代谢(RER)</div>
+                            <div style="font-size: 18px; font-weight: 600; margin-bottom: 12px;" id="activityRER">0 kcal/day</div>
+                            <div style="font-size: 14px; color: #86868b; margin-bottom: 4px;">最后更新</div>
+                            <div style="font-size: 18px; font-weight: 600;" id="activityLastUpdate">--:--:--</div>
+                        </div>
+                    </div>
+
+                    <!-- 图表区域 -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px; margin: 20px 0;">
+                        <div class="resting-stat-card" style="padding: 24px;">
+                            <h4 style="margin-bottom: 16px;">📊 每小时步数分布</h4>
+                            <div style="height: 300px;">
+                                <canvas id="activityHourlyStepsChart"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="resting-stat-card" style="padding: 24px;">
+                            <h4 style="margin-bottom: 16px;">📈 每小时活动量分布</h4>
+                            <div style="height: 300px;">
+                                <canvas id="activityHourlyENMOChart"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="resting-stat-card" style="padding: 24px;">
+                            <h4 style="margin-bottom: 16px;">🔥 每小时卡路里分布</h4>
+                            <div style="height: 300px;">
+                                <canvas id="activityHourlyCalorieChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin: 20px 0;">
+                        <div class="resting-stat-card" style="padding: 24px;">
+                            <h4 style="margin-bottom: 16px;">📉 实时活动强度趋势 (最近10分钟)</h4>
+                            <div style="height: 300px;">
+                                <canvas id="activityIntensityTrendChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 日志区域 -->
+                    <div class="resting-info-box">
+                        <strong>📝 活动日志:</strong>
+                        <div id="activityLog" style="max-height: 150px; overflow-y: auto; margin-top: 10px; font-family: monospace; font-size: 12px;">
+                            等待开始监测...
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 睡眠质量监测模块 -->
+            <section class="upload-section activity-section">
+                <h2>😴 睡眠质量监测</h2>
+                <p class="section-desc">
+                    基于IMU加速度计数据，实时监测宠物睡眠状态，分析睡眠质量和睡眠周期
+                </p>
+
+                <!-- 控制按钮 -->
+                <div class="file-actions">
+                    <button class="btn btn-success" id="sleepStartBtn" onclick="startSleepMonitor()">
+                        😴 开始睡眠监测
+                    </button>
+                    <button class="btn btn-danger" id="sleepStopBtn" onclick="stopSleepMonitor()" style="display:none;">
+                        ⏹️ 停止监测
+                    </button>
+                    <button class="btn btn-secondary" onclick="resetSleepData()">
+                        🔄 重置数据
+                    </button>
+                    <button class="btn btn-primary" onclick="generateSleepReport()">
+                        📊 生成报告
+                    </button>
+                </div>
+
+                <div class="resting-container">
+                    <!-- 实时状态卡片 -->
+                    <div class="resting-stats-grid">
+                        <div class="resting-stat-card">
+                            <div>当前状态</div>
+                            <div id="sleepCurrentStage" class="resting-value">清醒</div>
+                            <div id="sleepInBedStatus">未在床上</div>
+                        </div>
+
+                        <div class="resting-stat-card">
+                            <div>睡眠时长</div>
+                            <div id="sleepDuration" class="resting-value">0分钟</div>
+                            <div id="sleepStartTime">未开始</div>
+                        </div>
+
+                        <div class="resting-stat-card">
+                            <div>睡眠效率</div>
+                            <div id="sleepEfficiency" class="resting-value">0%</div>
+                            <div>睡眠质量指标</div>
+                        </div>
+
+                        <div class="resting-stat-card">
+                            <div>翻身次数</div>
+                            <div id="sleepTurnOverCount" class="resting-value">0次</div>
+                            <div>体动频率</div>
+                        </div>
+                    </div>
+
+                    <!-- 实时关键指标 -->
+                    <div class="resting-info-box" style="grid-column: span 2; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                        <strong>📊 实时关键指标</strong>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-top: 15px;">
+                            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                                <div style="font-size: 12px; opacity: 0.9;">RMS能量</div>
+                                <div id="sleepCurrentRMS" style="font-size: 24px; font-weight: bold; margin: 5px 0;">0.000g</div>
+                                <div id="sleepRMSStatus" style="font-size: 11px; opacity: 0.8;">静息</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                                <div style="font-size: 12px; opacity: 0.9;">零交叉率</div>
+                                <div id="sleepCurrentMCR" style="font-size: 24px; font-weight: bold; margin: 5px 0;">0.0次/秒</div>
+                                <div id="sleepMCRStatus" style="font-size: 11px; opacity: 0.8;">低频</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                                <div style="font-size: 12px; opacity: 0.9;">阶段持续</div>
+                                <div id="sleepStageDuration" style="font-size: 24px; font-weight: bold; margin: 5px 0;">0分钟</div>
+                                <div id="sleepLastStageChange" style="font-size: 11px; opacity: 0.8;">刚开始</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                                <div style="font-size: 12px; opacity: 0.9;">数据更新</div>
+                                <div id="sleepDataRate" style="font-size: 24px; font-weight: bold; margin: 5px 0;">0 Hz</div>
+                                <div id="sleepLastUpdate" style="font-size: 11px; opacity: 0.8;">等待数据</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 睡眠周期饼图 -->
+                    <div class="resting-stat-card" style="grid-column: span 2;">
+                        <h4>🌙 睡眠周期分布</h4>
+                        <canvas id="sleepCycleChart" style="max-height: 300px;"></canvas>
+                    </div>
+
+                    <!-- 睡眠阶段时间线 -->
+                    <div class="resting-stat-card" style="grid-column: span 2;">
+                        <h4>📈 睡眠阶段时间线</h4>
+                        <canvas id="sleepStageTimelineChart" style="max-height: 250px;"></canvas>
+                    </div>
+
+                    <!-- RMS能量趋势 -->
+                    <div class="resting-stat-card" style="grid-column: span 2;">
+                        <h4>⚡ 运动强度趋势 (RMS)</h4>
+                        <canvas id="sleepRMSChart" style="max-height: 250px;"></canvas>
+                    </div>
+
+                    <!-- 睡眠统计信息 -->
+                    <div class="resting-info-box" style="grid-column: span 2;">
+                        <strong>📊 睡眠统计:</strong>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-top: 10px;">
+                            <div>
+                                <div style="color: #5856D6; font-weight: bold;">深睡</div>
+                                <div id="sleepDeepTime">0分钟</div>
+                            </div>
+                            <div>
+                                <div style="color: #007AFF; font-weight: bold;">浅睡</div>
+                                <div id="sleepLightTime">0分钟</div>
+                            </div>
+                            <div>
+                                <div style="color: #FF9500; font-weight: bold;">REM</div>
+                                <div id="sleepREMTime">0分钟</div>
+                            </div>
+                            <div>
+                                <div style="color: #8E8E93; font-weight: bold;">清醒</div>
+                                <div id="sleepAwakeTime">0分钟</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 日志区域 -->
+                    <div class="resting-info-box" style="grid-column: span 2;">
+                        <strong>📝 睡眠事件:</strong>
+                        <div id="sleepEventLog" style="max-height: 150px; overflow-y: auto; margin-top: 10px; font-family: monospace; font-size: 12px;">
+                            等待开始监测...
+                        </div>
                     </div>
                 </div>
             </section>
@@ -856,6 +1146,8 @@
     <script src="radar-processor.js?v=20260113-4"></script>
     <script src="azure-gpt.js?v=20260113-3"></script>
     <script src="resting-monitor.js?v=20260113-3"></script>
+    <script src="activity-monitor.js?v=20260127-1"></script>
+    <script src="sleep-monitor.js?v=20260128-1"></script>
     <script src="app.js?v=20260113-16"></script>
 
     <!-- BLE调试代码 -->

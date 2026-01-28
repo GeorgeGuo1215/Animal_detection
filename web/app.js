@@ -3493,10 +3493,11 @@ class RadarWebApp {
         }
 
         // 更新温度图表
+        let validTempData = []; // 声明在外部以便后续使用
         if (this.bleCharts.temperature && this.bleBufferTemperature.length > 0) {
             const tempDataRaw = this.bleBufferTemperature.slice(start);
             // 过滤掉null值，只显示有效温度数据
-            const validTempData = tempDataRaw.map((temp, idx) => temp !== null ? temp : null);
+            validTempData = tempDataRaw.map((temp, idx) => temp !== null ? temp : null);
 
             // 计算有效温度数据的统计
             const validTemps = validTempData.filter(temp => temp !== null);
@@ -4800,3 +4801,19 @@ window.addEventListener('DOMContentLoaded', () => {
         observer.observe(bleDisconnectBtn, { attributes: true, attributeFilter: ['style'] });
     }
 });
+
+// 导出睡眠监测相关函数到全局作用域
+// 确保这些函数可以被HTML的onclick属性调用
+if (typeof window !== 'undefined') {
+    window.startSleepMonitor = startSleepMonitor;
+    window.stopSleepMonitor = stopSleepMonitor;
+    window.resetSleepData = resetSleepData;
+    window.generateSleepReport = generateSleepReport;
+    window.updateSleepDisplay = updateSleepDisplay;
+    window.sleepLog = sleepLog;
+    
+    console.log('✅ 睡眠监测函数已导出到全局作用域');
+    console.log('验证: startSleepMonitor =', typeof window.startSleepMonitor);
+    console.log('验证: stopSleepMonitor =', typeof window.stopSleepMonitor);
+    console.log('验证: resetSleepData =', typeof window.resetSleepData);
+}

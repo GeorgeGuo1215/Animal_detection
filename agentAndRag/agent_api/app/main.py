@@ -36,7 +36,7 @@ app = FastAPI(title="DeepSeek-OCR Agent Tools API", version="0.1.0")
 # Frontend is a static page and may be served from a different origin (nginx/n8n).
 # For early-stage deployment we allow CORS. You can tighten this later by setting
 # AGENT_CORS_ORIGINS="https://your-domain,https://another-domain".
-if os.getenv("AGENT_DISABLE_CORS", "0") != "1":
+if os.getenv("AGENT_ENABLE_CORS", "0") == "1":
     _origins = [o.strip() for o in os.getenv("AGENT_CORS_ORIGINS", "*").split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,

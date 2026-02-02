@@ -1,0 +1,12 @@
+{
+  "servers": [
+    {
+      "name": "sample",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_server_example"],
+      "env": {},
+      "enabled": false
+    }
+  ]
+}

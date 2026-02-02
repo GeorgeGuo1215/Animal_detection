@@ -11,6 +11,7 @@ from .jobs import create_job, get_job
 from .rag_tools import rag_reindex_tool, rag_search_tool, warmup_rag_cache
 from .tool_registry import get_registry
 from .tools_builtin import register_builtin_tools, register_debug_tools
+from .tools_mcp import register_mcp_tools
 from .schemas import (
     AgentPlanAndSolveRequest,
     AgentPlanAndSolveResponse,
@@ -35,14 +36,16 @@ app = FastAPI(title="DeepSeek-OCR Agent Tools API", version="0.1.0")
 # Frontend is a static page and may be served from a different origin (nginx/n8n).
 # For early-stage deployment we allow CORS. You can tighten this later by setting
 # AGENT_CORS_ORIGINS="https://your-domain,https://another-domain".
-_origins = [o.strip() for o in os.getenv("AGENT_CORS_ORIGINS", "*").split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_origins if _origins != ["*"] else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if os.getenv("AGENT_DISABLE_CORS", "0") != "1":
+    _origins = [o.strip() for o in os.getenv("AGENT_CORS_ORIGINS", "*").split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins if _origins != ["*"] else ["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        # Explicit headers to avoid wildcard incompatibility in some proxies/browsers
+        allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"],
+    )
 
 
 @app.on_event("startup")
@@ -52,6 +55,8 @@ def _startup() -> None:
     if reg.get("rag.search") is None:
         register_builtin_tools(reg)
         register_debug_tools(reg)
+        if os.getenv("AGENT_ENABLE_MCP", "1") == "1":
+            register_mcp_tools(reg)
 
     # Optional warmup to avoid slow first request.
     # Set env vars to enable:

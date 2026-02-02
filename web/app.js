@@ -4,6 +4,9 @@
 
 class RadarWebApp {
     constructor() {
+        if (typeof RadarDataProcessor === 'undefined') {
+            throw new Error('RadarDataProcessor 未加载，请检查 radar-processor.js 是否成功加载。');
+        }
         // 采样率固定为50Hz，与串口接收频率一致
         const samplingRate = 50;
         this.processor = new RadarDataProcessor(samplingRate);
@@ -16,6 +19,9 @@ class RadarWebApp {
         this.bleCharts = {}; // 蓝牙数据图表
         this.bleBufferI = [];
         this.bleBufferQ = [];
+
+        // 图表可用性（Chart.js 可能因网络/CDN加载失败）
+        this._chartsEnabled = true;
 
         // 自适应Y轴相关属性
         this.adaptiveYAxisEnabled = true; // 启用自适应Y轴以放大显示微小变化
@@ -131,22 +137,31 @@ class RadarWebApp {
      * 健康对话：仅维护 host:port（协议由页面自动决定）
      */
     getHealthChatAgentOrigin() {
-        // 关键：当页面为 https 时，浏览器会拦截任何 http 资源（混合内容）。
-        // 因此这里强制跟随页面协议：
-        // - 页面 http  -> 调用 http://129.204.169.52:9001
-        // - 页面 https -> 调用 https://129.204.169.52:9001（要求Agent支持HTTPS或由反代提供HTTPS）
-        const pageProto = window.location.protocol;
-        const proto = pageProto === 'https:' ? 'https:' : 'http:';
-        return `${proto}//129.204.169.52:9001`;
+                const inputEl = document.getElementById('agentEndpoint');
+        const inputVal = inputEl && inputEl.value ? inputEl.value.trim() : '';
+        const storedVal = (localStorage.getItem('agentEndpoint') || '').trim();
+        const overrideVal = inputVal || storedVal || (window.AGENT_ORIGIN || '');
+        if (overrideVal) {
+            let v = String(overrideVal).trim();
+            if (!/^https?:\/\//i.test(v)) {
+                v = `https://${v}`;
+            } else if (/^http:\/\//i.test(v)) {
+                v = v.replace(/^http:\/\//i, 'https://');
+            }
+            return v.replace(/\/+$/, '');
+        }
+
+        return 'https://pethealthai.cn';
     }
 
     setHealthChatStatus(state, detailText = '') {
         const dot = document.getElementById('chatAgentStatusDot');
         const text = document.getElementById('chatAgentStatusText');
         const endpointText = document.getElementById('chatAgentEndpointText');
-
-        const origin = this.getHealthChatAgentOrigin();
-        if (endpointText) endpointText.textContent = origin;
+        if (endpointText) {
+            endpointText.textContent = '';
+            endpointText.style.display = 'none';
+        }
 
         if (dot) {
             dot.classList.remove('connected', 'connecting', 'disconnected');
@@ -245,28 +260,40 @@ class RadarWebApp {
         const fileInput = document.getElementById('fileInput');
         const uploadArea = document.getElementById('uploadArea');
 
-        fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+        if (fileInput) {
+            fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+        } else {
+            console.warn('未找到 fileInput，文件上传功能将不可用。');
+        }
         
         // 拖拽上传
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        });
+        if (uploadArea) {
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
 
-        uploadArea.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-        });
+            uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+            });
 
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            this.handleFileSelect({ target: { files: e.dataTransfer.files } });
-        });
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                this.handleFileSelect({ target: { files: e.dataTransfer.files } });
+            });
+        } else {
+            console.warn('未找到 uploadArea，拖拽上传功能将不可用。');
+        }
 
         // 设置面板
         const settingsToggle = document.querySelector('.settings-toggle');
-        settingsToggle.addEventListener('click', () => this.toggleSettings());
+        if (settingsToggle) {
+            settingsToggle.addEventListener('click', () => this.toggleSettings());
+        } else {
+            console.warn('未找到 settings-toggle，设置面板按钮将不可用。');
+        }
     }
 
     initBleUploadConfig() {
@@ -2001,6 +2028,24 @@ class RadarWebApp {
      * 初始化蓝牙图表
      */
     initializeBluetoothCharts() {
+        if (typeof Chart === 'undefined') {
+            console.error('Chart.js 未加载，蓝牙图表初始化已跳过。');
+            return;
+        }
+
+        const requiredIds = [
+            'bleISignalChart',
+            'bleQSignalChart',
+            'bleConstellationChart',
+            'bleRespiratoryChart',
+            'bleHeartbeatChart'
+        ];
+        const missing = requiredIds.filter(id => !document.getElementById(id));
+        if (missing.length > 0) {
+            console.warn('蓝牙图表DOM缺失，跳过初始化:', missing);
+            return;
+        }
+
         const chartOptions = {
             responsive: true,
             maintainAspectRatio: false,
@@ -2268,6 +2313,31 @@ class RadarWebApp {
      * 初始化图表
      */
     initializeCharts() {
+        if (typeof Chart === 'undefined') {
+            this._chartsEnabled = false;
+            console.error('Chart.js 未加载，图表功能不可用。');
+            return;
+        }
+
+        const requiredIds = [
+            'iSignalChart',
+            'qSignalChart',
+            'constellationChart',
+            'respiratoryChart',
+            'heartbeatChart',
+            'heartRateChart',
+            'respRateChart',
+            'heartRateTimeChart',
+            'respRateTimeChart'
+        ];
+        const missing = requiredIds.filter(id => !document.getElementById(id));
+        if (missing.length > 0) {
+            this._chartsEnabled = false;
+            console.warn('图表DOM缺失，跳过初始化:', missing);
+            return;
+        }
+        this._chartsEnabled = true;
+
         const chartOptions = {
             responsive: true,
             maintainAspectRatio: false,
@@ -2426,6 +2496,7 @@ class RadarWebApp {
      * 更新图表
      */
     updateCharts(results) {
+        if (!this._chartsEnabled) return;
         if (results.length === 0) return;
 
         // 使用第一个成功的结果来显示波形
@@ -2679,6 +2750,7 @@ class RadarWebApp {
      * 更新JSON数据的图表（只显示心率和呼吸率时间序列）
      */
     updateJsonCharts(results) {
+        if (!this._chartsEnabled) return;
         const jsonResults = results.filter(r => r.dataType === 'json');
         if (jsonResults.length === 0) return;
 
@@ -3963,12 +4035,22 @@ class RadarWebApp {
 // 使用 var 让它同时挂到 window（方便调试，也避免部分环境下全局可见性差异）
 var app = null;
 window.app = null;
+window.appInitError = null;
 
 function _requireApp() {
     const a = window.app || app;
     if (!a) {
-        console.warn('应用尚未初始化或初始化失败，请查看控制台错误日志');
-        alert('应用尚未初始化或初始化失败（请查看控制台 Console 日志），建议刷新页面后重试。');
+        const err = window.appInitError;
+        if (err) {
+            console.warn('应用初始化失败:', err);
+        } else {
+            console.warn('应用尚未初始化或初始化失败，请查看控制台错误日志');
+        }
+        const reason = err ? (err.message || String(err)) : '';
+        alert(
+            '应用尚未初始化或初始化失败（请查看控制台 Console 日志），建议刷新页面后重试。' +
+            (reason ? `\n原因：${reason}` : '')
+        );
         return null;
     }
     return a;
@@ -3979,10 +4061,12 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
         app = new RadarWebApp();
         window.app = app;
+        window.appInitError = null;
     } catch (e) {
         console.error('❌ RadarWebApp 初始化失败:', e);
         app = null;
         window.app = null;
+        window.appInitError = e;
     }
 });
 

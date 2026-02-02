@@ -176,7 +176,7 @@ class RadarWebApp {
         }
     }
 
-    async fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+    async fetchWithTimeout(url, options = {}, timeoutMs = 300000) {
         const controller = new AbortController();
         const t = setTimeout(() => controller.abort(), timeoutMs);
         try {
@@ -1500,7 +1500,7 @@ class RadarWebApp {
             const query = this.buildHealthAnalysisQuery(result);
 
             // 调用agent API
-            const response = await fetch(`${agentEndpoint}/agent/plan_and_solve`, {
+            const response = await this.fetchWithTimeout(`${agentEndpoint}/agent/plan_and_solve`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1514,7 +1514,7 @@ class RadarWebApp {
                     temperature: 0.7,
                     max_tokens: 2000
                 })
-            });
+            }, 300000);
 
             if (!response.ok) {
                 throw new Error(`Agent API请求失败: ${response.status}`);
@@ -1771,7 +1771,7 @@ class RadarWebApp {
             const fullQuery = `${contextInfo}${historyContext}\n\n用户问题: ${message}`;
 
             // 调用agent API
-            const response = await fetch(`${agentEndpoint}/agent/plan_and_solve`, {
+            const response = await this.fetchWithTimeout(`${agentEndpoint}/agent/plan_and_solve`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1782,7 +1782,7 @@ class RadarWebApp {
                     temperature: 0.7,
                     max_tokens: 1500
                 })
-            });
+            }, 300000);
 
             if (!response.ok) {
                 throw new Error(`Agent API请求失败: ${response.status}`);

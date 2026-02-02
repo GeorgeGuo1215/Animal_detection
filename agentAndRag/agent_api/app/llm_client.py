@@ -26,7 +26,7 @@ class OpenAICompatClient:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        timeout_s: float = 1200.0,
+        timeout_s: float = 300.0,
     ) -> None:
         self.base_url = (base_url or _env("OPENAI_BASE_URL") or "https://api.deepseek.com").rstrip("/")
         self.api_key = api_key or _env("OPENAI_API_KEY") or _env("DEEPSEEK_API_KEY") or ""

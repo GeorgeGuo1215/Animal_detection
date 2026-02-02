@@ -64,7 +64,8 @@ def _startup() -> None:
     #   AGENT_WARMUP_BM25=1
     #   AGENT_WARMUP_RERANKER=0/1
     #   AGENT_WARMUP_DEVICE=cuda/cpu (optional)
-    if os.getenv("AGENT_WARMUP_RAG", "0") == "1":
+    # Preload embedding + reranker on startup to avoid first-request latency.
+    if os.getenv("AGENT_WARMUP_RAG", "1") == "1":
         from pathlib import Path
         from RAG.simple_rag.config import default_config
 
@@ -75,7 +76,7 @@ def _startup() -> None:
             embedding_model=os.getenv("AGENT_WARMUP_EMBEDDING_MODEL", "intfloat/multilingual-e5-small"),
             device=os.getenv("AGENT_WARMUP_DEVICE") or None,
             enable_bm25=os.getenv("AGENT_WARMUP_BM25", "1") == "1",
-            enable_reranker=os.getenv("AGENT_WARMUP_RERANKER", "0") == "1",
+            enable_reranker=os.getenv("AGENT_WARMUP_RERANKER", "1") == "1",
             rerank_model=os.getenv("AGENT_WARMUP_RERANK_MODEL", "BAAI/bge-reranker-large"),
         )
 

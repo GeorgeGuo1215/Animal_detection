@@ -76,14 +76,16 @@ python -m agent_api.app.serve
 
 #### 启动时预热 RAG 缓存
 
-默认不预热
+默认预热（embedding + reranker）
 
 Windows CMD 示例：
 
 ```bat
 set AGENT_WARMUP_RAG=1
 set AGENT_WARMUP_BM25=1
-set AGENT_WARMUP_RERANKER=0
+set AGENT_WARMUP_RERANKER=1
+REM 如果你想关闭预热：
+REM set AGENT_WARMUP_RAG=0
 REM 如果你想让 embedding/reranker 上 GPU（你机器得有可用 CUDA）：
 REM set AGENT_WARMUP_DEVICE=cuda
 python -m uvicorn agent_api.app.main:app --host 127.0.0.1 --port 8000

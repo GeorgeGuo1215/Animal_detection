@@ -18,6 +18,39 @@ pip install -r lora/requirements.txt
 python -m uvicorn agent_api.app.main:app --host 127.0.0.1 --port 8000
 ```
 
+#### 2.2）MCP（Model Context Protocol）工具扩展
+
+本项目支持把 MCP 服务器中的工具“挂载”到本地 Tool Registry。
+
+启用方式（默认开启）：
+
+- 环境变量：`AGENT_ENABLE_MCP=1`
+- 配置文件：`agent_api/mcp_servers.json`
+- 或直接用环境变量注入：`MCP_SERVER_JSON`
+
+`agent_api/mcp_servers.json` 示例：
+
+```json
+{
+  "servers": [
+    {
+      "name": "sample",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_server_example"],
+      "env": {},
+      "enabled": false
+    }
+  ]
+}
+```
+
+说明：
+
+- 目前实现的是 **stdio transport**（本地启动 MCP server 进程）
+- 会把 MCP tool 注册为 `mcp.{server}.{tool}`，例如 `mcp.sample.search`
+- 如果 `enabled=false` 或配置缺失，启动时会跳过，不影响原有工具
+
 #### 2.1）解决“HTTPS 页面调用 HTTP Agent 被浏览器拦截（Mixed Content）”
 
 你的 `web/` 会通过 GitHub Pages 以 **HTTPS** 方式部署，而浏览器会 **强制拦截** 从 HTTPS 页面发往 HTTP 的请求（即使 CORS 全开也没用）。

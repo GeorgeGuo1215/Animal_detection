@@ -118,6 +118,9 @@ class RadarWebApp {
         this.voiceRecognition = null;
         this.voiceRecognitionActive = false;
 
+        // ===== Agent Endpoint 初始化 =====
+        this.initAgentEndpoint();
+
         this.initializeEventListeners();
         this.initBleUploadConfig();
         this.initializeCharts();
@@ -138,24 +141,48 @@ class RadarWebApp {
     }
 
     /**
-     * 健康对话：仅维护 host:port（协议由页面自动决定）
+     * 初始化 Agent Endpoint（构造函数调用）
+     */
+    initAgentEndpoint() {
+        const defaultEndpoint = 'https://pethealthai.cn';
+        const stored = localStorage.getItem('agentEndpoint');
+        
+        // 如果 localStorage 没有值，设置默认值
+        if (!stored) {
+            localStorage.setItem('agentEndpoint', defaultEndpoint);
+        }
+        
+        // 同步到输入框（如果存在）
+        const inputEl = document.getElementById('agentEndpoint');
+        if (inputEl) {
+            inputEl.value = localStorage.getItem('agentEndpoint') || defaultEndpoint;
+        }
+    }
+
+    /**
+     * 健康对话：获取 Agent API 地址
      */
     getHealthChatAgentOrigin() {
-                const inputEl = document.getElementById('agentEndpoint');
+        const inputEl = document.getElementById('agentEndpoint');
         const inputVal = inputEl && inputEl.value ? inputEl.value.trim() : '';
         const storedVal = (localStorage.getItem('agentEndpoint') || '').trim();
-        const overrideVal = inputVal || storedVal || (window.AGENT_ORIGIN || '');
-        if (overrideVal) {
-            let v = String(overrideVal).trim();
-            if (!/^https?:\/\//i.test(v)) {
-                v = `https://${v}`;
-            } else if (/^http:\/\//i.test(v)) {
-                v = v.replace(/^http:\/\//i, 'https://');
-            }
-            return v.replace(/\/+$/, '');
+        const defaultVal = 'https://pethealthai.cn';
+        
+        let v = inputVal || storedVal || defaultVal;
+        
+        // 确保是 https
+        if (!/^https?:\/\//i.test(v)) {
+            v = `https://${v}`;
+        } else if (/^http:\/\//i.test(v)) {
+            v = v.replace(/^http:\/\//i, 'https://');
         }
-
-        return 'https://pethealthai.cn';
+        
+        // 同步到 localStorage（如果用户在输入框里改了）
+        if (inputVal && inputVal !== storedVal) {
+            localStorage.setItem('agentEndpoint', v);
+        }
+        
+        return v.replace(/\/+$/, '');
     }
 
     setHealthChatStatus(state, detailText = '') {
@@ -1707,9 +1734,7 @@ class RadarWebApp {
         const origin = this.getHealthChatAgentOrigin();
         this.setHealthChatStatus('connecting');
 
-        // 这里做一次健康检查，用于：
-        // 1) 给用户清晰的“已连接/未连接”反馈
-        // 2) HTTPS 页面下，如果 Agent 没有 HTTPS，会明确提示，而不是“发不出去”
+        // 健康检查
         this.fetchWithTimeout(`${origin}/health`, { method: 'GET' }, 6000)
             .then(async (r) => {
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1719,7 +1744,7 @@ class RadarWebApp {
                 const sendBtn = document.getElementById('sendChatBtn');
                 if (sendBtn) sendBtn.disabled = false;
 
-                // 加载历史对话（仅首次/每次重连都可以加载，体验更一致）
+                // 加载历史对话
                 this.loadChatHistory();
 
                 this.showMessage('✅ 宠物健康对话已就绪', 'success');
@@ -1728,23 +1753,49 @@ class RadarWebApp {
                 const sendBtn = document.getElementById('sendChatBtn');
                 if (sendBtn) sendBtn.disabled = true;
 
-                // 对 https 页面，重点提示“必须 https”
-                const isHttpsPage = window.location.protocol === 'https:';
-                if (isHttpsPage) {
-                    this.setHealthChatStatus('disconnected', '需要HTTPS');
-                    this.showMessage(
-                        '当前页面为 HTTPS，浏览器会拦截对 HTTP Agent 的请求。请让 Agent 也提供 HTTPS（推荐用域名+证书，或用 Nginx/Caddy 反代提供 HTTPS）。若使用自签证书，需要先在浏览器打开一次对应的 /health 页面并手动信任证书。',
-                        'warning'
-                    );
-                } else {
-                    this.setHealthChatStatus('disconnected');
-                    this.showMessage(`连接Agent失败：${e.message}`, 'warning');
-                }
+                this.setHealthChatStatus('disconnected');
+                this.showMessage(`连接Agent失败：${e.message}`, 'warning');
             });
     }
 
     /**
-     * 发送对话消息
+     * 获取 API Key（从 localStorage 或默认值）
+     */
+    getAgentApiKey() {
+        return localStorage.getItem('agentApiKey') || 'sk-pethealthai-default-key-2026';
+    }
+
+    /**
+     * 设置 API Key
+     */
+    setAgentApiKey(key) {
+        localStorage.setItem('agentApiKey', key);
+    }
+
+    /**
+     * 获取 Agent 模式
+     * @returns {'agent-plan-solve' | 'agent-multi-turn'}
+     */
+    getAgentModel() {
+        return localStorage.getItem('agentModel') || 'agent-multi-turn';
+    }
+
+    /**
+     * 设置 Agent 模式
+     * @param {'agent-plan-solve' | 'agent-multi-turn'} model
+     */
+    setAgentModel(model) {
+        const valid = ['agent-plan-solve', 'agent-multi-turn'];
+        if (valid.includes(model)) {
+            localStorage.setItem('agentModel', model);
+            console.log(`Agent 模式已切换为: ${model}`);
+        } else {
+            console.warn(`无效的 Agent 模式: ${model}，可选值: ${valid.join(', ')}`);
+        }
+    }
+
+    /**
+     * 发送对话消息（流式输出版本）
      */
     async sendChatMessage() {
         const inputEl = document.getElementById('chatInput');
@@ -1755,6 +1806,7 @@ class RadarWebApp {
         }
 
         const agentEndpoint = this.getHealthChatAgentOrigin();
+        const apiKey = this.getAgentApiKey();
         const sendBtn = document.getElementById('sendChatBtn');
 
         // 添加用户消息到界面
@@ -1763,47 +1815,121 @@ class RadarWebApp {
         sendBtn.disabled = true;
         sendBtn.textContent = '发送中...';
 
-        // 添加AI思考中消息
-        const thinkingMessageId = this.addChatMessage('assistant', '正在思考中...', true);
+        // 添加AI消息容器（包含状态区和回答区）
+        const thinkingMessageId = this.addChatMessageWithStatus('assistant', '', true);
 
         try {
             // 构建上下文信息
             const contextInfo = this.buildChatContext();
             const historyContext = this.buildChatHistoryContext(12);
 
-            // 构建完整查询
-            const fullQuery = `${contextInfo}${historyContext}\n\n用户问题: ${message}`;
+            // 构建 OpenAI 兼容的 messages 格式
+            const messages = [
+                { role: 'system', content: contextInfo },
+            ];
+            
+            // 添加历史对话
+            const chatHistory = JSON.parse(localStorage.getItem('petHealthChatHistory') || '[]');
+            const recent = chatHistory.slice(Math.max(0, chatHistory.length - 12));
+            for (const msg of recent) {
+                if (msg && (msg.role === 'user' || msg.role === 'assistant') && msg.content) {
+                    messages.push({ role: msg.role, content: msg.content });
+                }
+            }
+            
+            // 添加当前用户消息
+            messages.push({ role: 'user', content: message });
 
-            // 调用agent API
-            const response = await this.fetchWithTimeout(`${agentEndpoint}/agent/plan_and_solve`, {
+            // 获取用户选择的 Agent 模式（默认多轮）
+            const agentModel = localStorage.getItem('agentModel') || 'agent-multi-turn';
+
+            // 调用 OpenAI 兼容的流式 API
+            const response = await fetch(`${agentEndpoint}/v1/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify({
-                    query: fullQuery,
-                    allowed_tools: ['rag.search'],
+                    model: agentModel,
+                    messages: messages,
+                    stream: true,
                     temperature: 0.7,
-                    max_tokens: 1500
+                    max_tokens: 1500,
+                    tools: [{ function: { name: 'rag.search' } }],
                 })
-            }, 300000);
+            });
 
             if (!response.ok) {
-                throw new Error(`Agent API请求失败: ${response.status}`);
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error?.message || `API请求失败: ${response.status}`);
             }
 
-            const result = await response.json();
+            // 处理 SSE 流式响应
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullContent = '';  // 最终回答内容（不含状态信息）
+            let statusLogs = [];   // 状态日志
+            let buffer = '';
+            let isGenerating = false;  // 是否已进入生成阶段
 
-            if (!result.ok) {
-                throw new Error(result.error?.message || '对话失败');
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const data = line.slice(6);
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const chunk = JSON.parse(data);
+                        const delta = chunk.choices?.[0]?.delta;
+                        const content = delta?.content;
+                        const agentStatus = chunk.agent_status;
+                        const agentDetail = chunk.agent_detail;
+
+                        // 处理状态更新
+                        if (agentStatus) {
+                            if (agentStatus === 'generating' || agentStatus === 'streaming') {
+                                isGenerating = true;
+                            }
+                            
+                            // 记录状态日志（用于状态区显示）
+                            if (agentStatus !== 'streaming') {
+                                const statusInfo = this._formatAgentStatus(agentStatus, agentDetail);
+                                if (statusInfo) {
+                                    statusLogs.push(statusInfo);
+                                    this._updateChatStatusArea(thinkingMessageId, statusLogs);
+                                }
+                            }
+                        }
+
+                        // 处理内容
+                        if (content) {
+                            if (isGenerating) {
+                                // 生成阶段：累积最终回答
+                                fullContent += content;
+                                this._updateChatAnswerArea(thinkingMessageId, fullContent);
+                            }
+                            // 非生成阶段的 content 是状态信息，已通过 statusLogs 处理，不累积
+                        }
+                    } catch (e) {
+                        // 忽略解析错误
+                    }
+                }
             }
 
-            // 更新AI回复
-            this.updateChatMessage(thinkingMessageId, result.answer || '暂无回复');
+            // 生成完成后，折叠状态区
+            this._collapseChatStatusArea(thinkingMessageId);
 
-            // 保存对话历史
+            // 保存对话历史（只保存最终回答，不含状态信息）
             this.saveChatMessage('user', message);
-            this.saveChatMessage('assistant', result.answer || '暂无回复');
+            this.saveChatMessage('assistant', fullContent || '暂无回复');
 
         } catch (error) {
             console.error('对话失败:', error);
@@ -1889,6 +2015,156 @@ class RadarWebApp {
         messagesEl.scrollTop = messagesEl.scrollHeight;
 
         return messageId;
+    }
+
+    /**
+     * 添加带状态区的聊天消息（用于 Agent 流式输出）
+     */
+    addChatMessageWithStatus(role, content, isThinking = false) {
+        const messagesEl = document.getElementById('chatMessages');
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+        const messageHtml = `
+            <div class="chat-message ${role}-message ${isThinking ? 'thinking' : ''}" id="${messageId}">
+                <div class="message-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+                <div class="message-content">
+                    <div class="message-status-area" id="${messageId}_status">
+                        <div class="status-header" onclick="window.app && window.app._toggleStatusArea('${messageId}')">
+                            <span class="status-icon">⚙️</span>
+                            <span class="status-title">Agent 思考过程</span>
+                            <span class="status-toggle">▼</span>
+                        </div>
+                        <div class="status-content">
+                            <div class="status-loading">🤔 正在思考...</div>
+                        </div>
+                    </div>
+                    <div class="message-text" id="${messageId}_answer"></div>
+                    <div class="message-time">${new Date().toLocaleTimeString('zh-CN')}</div>
+                </div>
+            </div>
+        `;
+
+        messagesEl.insertAdjacentHTML('beforeend', messageHtml);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        return messageId;
+    }
+
+    /**
+     * 格式化 Agent 状态信息
+     */
+    _formatAgentStatus(status, detail) {
+        const statusIcons = {
+            'thinking': '🤔',
+            'planning': '📋',
+            'plan_complete': '✅',
+            'tool_calling': '🔍',
+            'tool_complete': '✅',
+            'decided_final': '💡',
+            'generating': '💭',
+        };
+
+        const icon = statusIcons[status] || '⚙️';
+        let text = '';
+
+        switch (status) {
+            case 'thinking':
+                text = `思考中... (第${detail?.round || 1}轮)`;
+                break;
+            case 'planning':
+                text = '正在制定计划...';
+                break;
+            case 'plan_complete':
+                text = '计划制定完成';
+                break;
+            case 'tool_calling':
+                const toolName = detail?.tool_name || 'rag.search';
+                const round = detail?.round || 1;
+                text = `第${round}轮工具调用: ${toolName}`;
+                break;
+            case 'tool_complete':
+                const hits = detail?.hits_count || 0;
+                text = `找到 ${hits} 条相关信息`;
+                break;
+            case 'decided_final':
+                const reason = detail?.reason || '';
+                text = `决定生成回答${reason ? ` (${reason.substring(0, 50)}...)` : ''}`;
+                break;
+            case 'generating':
+                text = '正在生成回答...';
+                break;
+            default:
+                text = status;
+        }
+
+        return { icon, text, status };
+    }
+
+    /**
+     * 更新状态区
+     */
+    _updateChatStatusArea(messageId, statusLogs) {
+        const statusEl = document.getElementById(`${messageId}_status`);
+        if (!statusEl) return;
+
+        const contentEl = statusEl.querySelector('.status-content');
+        if (!contentEl) return;
+
+        const html = statusLogs.map(log => `
+            <div class="status-item status-${log.status}">
+                <span class="status-item-icon">${log.icon}</span>
+                <span class="status-item-text">${log.text}</span>
+            </div>
+        `).join('');
+
+        contentEl.innerHTML = html || '<div class="status-loading">🤔 正在思考...</div>';
+
+        // 滚动到底部
+        const messagesEl = document.getElementById('chatMessages');
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    /**
+     * 更新回答区（流式 Markdown 渲染）
+     */
+    _updateChatAnswerArea(messageId, content) {
+        const answerEl = document.getElementById(`${messageId}_answer`);
+        if (!answerEl) return;
+
+        // 流式渲染 Markdown
+        answerEl.innerHTML = this.formatChatMessage(content);
+
+        // 移除 thinking 状态
+        const messageEl = document.getElementById(messageId);
+        if (messageEl) messageEl.classList.remove('thinking');
+
+        // 滚动到底部
+        const messagesEl = document.getElementById('chatMessages');
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    /**
+     * 折叠状态区
+     */
+    _collapseChatStatusArea(messageId) {
+        const statusEl = document.getElementById(`${messageId}_status`);
+        if (!statusEl) return;
+
+        statusEl.classList.add('collapsed');
+        const toggleEl = statusEl.querySelector('.status-toggle');
+        if (toggleEl) toggleEl.textContent = '▶';
+    }
+
+    /**
+     * 切换状态区展开/折叠
+     */
+    _toggleStatusArea(messageId) {
+        const statusEl = document.getElementById(`${messageId}_status`);
+        if (!statusEl) return;
+
+        const isCollapsed = statusEl.classList.toggle('collapsed');
+        const toggleEl = statusEl.querySelector('.status-toggle');
+        if (toggleEl) toggleEl.textContent = isCollapsed ? '▶' : '▼';
     }
 
     /**

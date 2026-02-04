@@ -1730,9 +1730,7 @@ class RadarWebApp {
         const origin = this.getHealthChatAgentOrigin();
         this.setHealthChatStatus('connecting');
 
-        // 这里做一次健康检查，用于：
-        // 1) 给用户清晰的“已连接/未连接”反馈
-        // 2) HTTPS 页面下，如果 Agent 没有 HTTPS，会明确提示，而不是“发不出去”
+        // 健康检查
         this.fetchWithTimeout(`${origin}/health`, { method: 'GET' }, 6000)
             .then(async (r) => {
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1742,7 +1740,7 @@ class RadarWebApp {
                 const sendBtn = document.getElementById('sendChatBtn');
                 if (sendBtn) sendBtn.disabled = false;
 
-                // 加载历史对话（仅首次/每次重连都可以加载，体验更一致）
+                // 加载历史对话
                 this.loadChatHistory();
 
                 this.showMessage('✅ 宠物健康对话已就绪', 'success');
@@ -1751,18 +1749,8 @@ class RadarWebApp {
                 const sendBtn = document.getElementById('sendChatBtn');
                 if (sendBtn) sendBtn.disabled = true;
 
-                // 对 https 页面，重点提示“必须 https”
-                const isHttpsPage = window.location.protocol === 'https:';
-                if (isHttpsPage) {
-                    this.setHealthChatStatus('disconnected', '需要HTTPS');
-                    this.showMessage(
-                        '当前页面为 HTTPS，浏览器会拦截对 HTTP Agent 的请求。请让 Agent 也提供 HTTPS（推荐用域名+证书，或用 Nginx/Caddy 反代提供 HTTPS）。若使用自签证书，需要先在浏览器打开一次对应的 /health 页面并手动信任证书。',
-                        'warning'
-                    );
-                } else {
-                    this.setHealthChatStatus('disconnected');
-                    this.showMessage(`连接Agent失败：${e.message}`, 'warning');
-                }
+                this.setHealthChatStatus('disconnected');
+                this.showMessage(`连接Agent失败：${e.message}`, 'warning');
             });
     }
 
@@ -1823,8 +1811,8 @@ class RadarWebApp {
         sendBtn.disabled = true;
         sendBtn.textContent = '发送中...';
 
-        // 添加AI思考中消息
-        const thinkingMessageId = this.addChatMessage('assistant', '', true);
+        // 添加AI消息容器（包含状态区和回答区）
+        const thinkingMessageId = this.addChatMessageWithStatus('assistant', '', true);
 
         try {
             // 构建上下文信息
@@ -1859,7 +1847,7 @@ class RadarWebApp {
                     'Authorization': `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify({
-                    model: agentModel,  // 'agent-plan-solve' 或 'agent-multi-turn'
+                    model: agentModel,
                     messages: messages,
                     stream: true,
                     temperature: 0.7,
@@ -1876,8 +1864,10 @@ class RadarWebApp {
             // 处理 SSE 流式响应
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
-            let fullContent = '';
+            let fullContent = '';  // 最终回答内容（不含状态信息）
+            let statusLogs = [];   // 状态日志
             let buffer = '';
+            let isGenerating = false;  // 是否已进入生成阶段
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -1897,26 +1887,32 @@ class RadarWebApp {
                         const delta = chunk.choices?.[0]?.delta;
                         const content = delta?.content;
                         const agentStatus = chunk.agent_status;
+                        const agentDetail = chunk.agent_detail;
 
-                        // 更新状态显示（多轮 Agent 有更多状态）
+                        // 处理状态更新
                         if (agentStatus) {
-                            const statusMap = {
-                                'planning': '📋 正在制定计划...',
-                                'plan_complete': '✅ 计划完成',
-                                'thinking': '🤔 思考中...',
-                                'tool_calling': '🔍 正在搜索知识库...',
-                                'tool_complete': '✅ 搜索完成',
-                                'decided_final': '💡 决定生成回答',
-                                'generating': '💭 正在生成回答...',
-                                'streaming': '',
-                            };
-                            // 状态信息已包含在 content 中，不需要额外显示
-                            // 可以在这里更新 UI 状态指示器（如果有的话）
+                            if (agentStatus === 'generating' || agentStatus === 'streaming') {
+                                isGenerating = true;
+                            }
+                            
+                            // 记录状态日志（用于状态区显示）
+                            if (agentStatus !== 'streaming') {
+                                const statusInfo = this._formatAgentStatus(agentStatus, agentDetail);
+                                if (statusInfo) {
+                                    statusLogs.push(statusInfo);
+                                    this._updateChatStatusArea(thinkingMessageId, statusLogs);
+                                }
+                            }
                         }
 
+                        // 处理内容
                         if (content) {
-                            fullContent += content;
-                            this.updateChatMessage(thinkingMessageId, fullContent);
+                            if (isGenerating) {
+                                // 生成阶段：累积最终回答
+                                fullContent += content;
+                                this._updateChatAnswerArea(thinkingMessageId, fullContent);
+                            }
+                            // 非生成阶段的 content 是状态信息，已通过 statusLogs 处理，不累积
                         }
                     } catch (e) {
                         // 忽略解析错误
@@ -1924,7 +1920,10 @@ class RadarWebApp {
                 }
             }
 
-            // 保存对话历史
+            // 生成完成后，折叠状态区
+            this._collapseChatStatusArea(thinkingMessageId);
+
+            // 保存对话历史（只保存最终回答，不含状态信息）
             this.saveChatMessage('user', message);
             this.saveChatMessage('assistant', fullContent || '暂无回复');
 
@@ -2012,6 +2011,156 @@ class RadarWebApp {
         messagesEl.scrollTop = messagesEl.scrollHeight;
 
         return messageId;
+    }
+
+    /**
+     * 添加带状态区的聊天消息（用于 Agent 流式输出）
+     */
+    addChatMessageWithStatus(role, content, isThinking = false) {
+        const messagesEl = document.getElementById('chatMessages');
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+        const messageHtml = `
+            <div class="chat-message ${role}-message ${isThinking ? 'thinking' : ''}" id="${messageId}">
+                <div class="message-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+                <div class="message-content">
+                    <div class="message-status-area" id="${messageId}_status">
+                        <div class="status-header" onclick="window.app && window.app._toggleStatusArea('${messageId}')">
+                            <span class="status-icon">⚙️</span>
+                            <span class="status-title">Agent 思考过程</span>
+                            <span class="status-toggle">▼</span>
+                        </div>
+                        <div class="status-content">
+                            <div class="status-loading">🤔 正在思考...</div>
+                        </div>
+                    </div>
+                    <div class="message-text" id="${messageId}_answer"></div>
+                    <div class="message-time">${new Date().toLocaleTimeString('zh-CN')}</div>
+                </div>
+            </div>
+        `;
+
+        messagesEl.insertAdjacentHTML('beforeend', messageHtml);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        return messageId;
+    }
+
+    /**
+     * 格式化 Agent 状态信息
+     */
+    _formatAgentStatus(status, detail) {
+        const statusIcons = {
+            'thinking': '🤔',
+            'planning': '📋',
+            'plan_complete': '✅',
+            'tool_calling': '🔍',
+            'tool_complete': '✅',
+            'decided_final': '💡',
+            'generating': '💭',
+        };
+
+        const icon = statusIcons[status] || '⚙️';
+        let text = '';
+
+        switch (status) {
+            case 'thinking':
+                text = `思考中... (第${detail?.round || 1}轮)`;
+                break;
+            case 'planning':
+                text = '正在制定计划...';
+                break;
+            case 'plan_complete':
+                text = '计划制定完成';
+                break;
+            case 'tool_calling':
+                const toolName = detail?.tool_name || 'rag.search';
+                const round = detail?.round || 1;
+                text = `第${round}轮工具调用: ${toolName}`;
+                break;
+            case 'tool_complete':
+                const hits = detail?.hits_count || 0;
+                text = `找到 ${hits} 条相关信息`;
+                break;
+            case 'decided_final':
+                const reason = detail?.reason || '';
+                text = `决定生成回答${reason ? ` (${reason.substring(0, 50)}...)` : ''}`;
+                break;
+            case 'generating':
+                text = '正在生成回答...';
+                break;
+            default:
+                text = status;
+        }
+
+        return { icon, text, status };
+    }
+
+    /**
+     * 更新状态区
+     */
+    _updateChatStatusArea(messageId, statusLogs) {
+        const statusEl = document.getElementById(`${messageId}_status`);
+        if (!statusEl) return;
+
+        const contentEl = statusEl.querySelector('.status-content');
+        if (!contentEl) return;
+
+        const html = statusLogs.map(log => `
+            <div class="status-item status-${log.status}">
+                <span class="status-item-icon">${log.icon}</span>
+                <span class="status-item-text">${log.text}</span>
+            </div>
+        `).join('');
+
+        contentEl.innerHTML = html || '<div class="status-loading">🤔 正在思考...</div>';
+
+        // 滚动到底部
+        const messagesEl = document.getElementById('chatMessages');
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    /**
+     * 更新回答区（流式 Markdown 渲染）
+     */
+    _updateChatAnswerArea(messageId, content) {
+        const answerEl = document.getElementById(`${messageId}_answer`);
+        if (!answerEl) return;
+
+        // 流式渲染 Markdown
+        answerEl.innerHTML = this.formatChatMessage(content);
+
+        // 移除 thinking 状态
+        const messageEl = document.getElementById(messageId);
+        if (messageEl) messageEl.classList.remove('thinking');
+
+        // 滚动到底部
+        const messagesEl = document.getElementById('chatMessages');
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    /**
+     * 折叠状态区
+     */
+    _collapseChatStatusArea(messageId) {
+        const statusEl = document.getElementById(`${messageId}_status`);
+        if (!statusEl) return;
+
+        statusEl.classList.add('collapsed');
+        const toggleEl = statusEl.querySelector('.status-toggle');
+        if (toggleEl) toggleEl.textContent = '▶';
+    }
+
+    /**
+     * 切换状态区展开/折叠
+     */
+    _toggleStatusArea(messageId) {
+        const statusEl = document.getElementById(`${messageId}_status`);
+        if (!statusEl) return;
+
+        const isCollapsed = statusEl.classList.toggle('collapsed');
+        const toggleEl = statusEl.querySelector('.status-toggle');
+        if (toggleEl) toggleEl.textContent = isCollapsed ? '▶' : '▼';
     }
 
     /**

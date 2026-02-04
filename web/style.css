@@ -1487,7 +1487,7 @@ tr:hover {
 
 /* 强调文本 */
 .message-text strong {
-    color: #f1f5f9;
+    color: #00000085;
     font-weight: 600;
 }
 

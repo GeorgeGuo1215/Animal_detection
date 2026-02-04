@@ -7,11 +7,13 @@ from typing import Any, Dict
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .auth import APIKeyAuthMiddleware, load_api_keys
 from .jobs import create_job, get_job
 from .rag_tools import rag_reindex_tool, rag_search_tool, warmup_rag_cache
 from .tool_registry import get_registry
 from .tools_builtin import register_builtin_tools, register_debug_tools
 from .tools_mcp import register_mcp_tools
+from .routes_openai import router as openai_router
 from .schemas import (
     AgentPlanAndSolveRequest,
     AgentPlanAndSolveResponse,
@@ -31,7 +33,13 @@ from .plan_and_solve import PlanAndSolveAgent
 from .trace_store import new_trace_id, write_trace
 
 
-app = FastAPI(title="DeepSeek-OCR Agent Tools API", version="0.1.0")
+app = FastAPI(title="PetHealthAI Agent API", version="0.2.0")
+
+# Include OpenAI-compatible routes
+app.include_router(openai_router)
+
+# Add API key authentication middleware
+app.add_middleware(APIKeyAuthMiddleware)
 
 # Frontend is a static page and may be served from a different origin (nginx/n8n).
 # For early-stage deployment we allow CORS. You can tighten this later by setting
@@ -50,6 +58,9 @@ if os.getenv("AGENT_ENABLE_CORS", "0") == "1":
 
 @app.on_event("startup")
 def _startup() -> None:
+    # Load API keys from keys.txt
+    load_api_keys()
+    
     # register tools once
     reg = get_registry()
     if reg.get("rag.search") is None:

@@ -114,6 +114,9 @@ class RadarWebApp {
         this.sleepMonitor = null;
         this.sleepMonitorEnabled = false;
 
+        // ===== Agent Endpoint 初始化 =====
+        this.initAgentEndpoint();
+
         this.initializeEventListeners();
         this.initBleUploadConfig();
         this.initializeCharts();
@@ -134,24 +137,48 @@ class RadarWebApp {
     }
 
     /**
-     * 健康对话：仅维护 host:port（协议由页面自动决定）
+     * 初始化 Agent Endpoint（构造函数调用）
+     */
+    initAgentEndpoint() {
+        const defaultEndpoint = 'https://pethealthai.cn';
+        const stored = localStorage.getItem('agentEndpoint');
+        
+        // 如果 localStorage 没有值，设置默认值
+        if (!stored) {
+            localStorage.setItem('agentEndpoint', defaultEndpoint);
+        }
+        
+        // 同步到输入框（如果存在）
+        const inputEl = document.getElementById('agentEndpoint');
+        if (inputEl) {
+            inputEl.value = localStorage.getItem('agentEndpoint') || defaultEndpoint;
+        }
+    }
+
+    /**
+     * 健康对话：获取 Agent API 地址
      */
     getHealthChatAgentOrigin() {
-                const inputEl = document.getElementById('agentEndpoint');
+        const inputEl = document.getElementById('agentEndpoint');
         const inputVal = inputEl && inputEl.value ? inputEl.value.trim() : '';
         const storedVal = (localStorage.getItem('agentEndpoint') || '').trim();
-        const overrideVal = inputVal || storedVal || (window.AGENT_ORIGIN || '');
-        if (overrideVal) {
-            let v = String(overrideVal).trim();
-            if (!/^https?:\/\//i.test(v)) {
-                v = `https://${v}`;
-            } else if (/^http:\/\//i.test(v)) {
-                v = v.replace(/^http:\/\//i, 'https://');
-            }
-            return v.replace(/\/+$/, '');
+        const defaultVal = 'https://pethealthai.cn';
+        
+        let v = inputVal || storedVal || defaultVal;
+        
+        // 确保是 https
+        if (!/^https?:\/\//i.test(v)) {
+            v = `https://${v}`;
+        } else if (/^http:\/\//i.test(v)) {
+            v = v.replace(/^http:\/\//i, 'https://');
         }
-
-        return 'https://pethealthai.cn';
+        
+        // 同步到 localStorage（如果用户在输入框里改了）
+        if (inputVal && inputVal !== storedVal) {
+            localStorage.setItem('agentEndpoint', v);
+        }
+        
+        return v.replace(/\/+$/, '');
     }
 
     setHealthChatStatus(state, detailText = '') {
@@ -1740,7 +1767,43 @@ class RadarWebApp {
     }
 
     /**
-     * 发送对话消息
+     * 获取 API Key（从 localStorage 或默认值）
+     */
+    getAgentApiKey() {
+        return localStorage.getItem('agentApiKey') || 'sk-pethealthai-default-key-2026';
+    }
+
+    /**
+     * 设置 API Key
+     */
+    setAgentApiKey(key) {
+        localStorage.setItem('agentApiKey', key);
+    }
+
+    /**
+     * 获取 Agent 模式
+     * @returns {'agent-plan-solve' | 'agent-multi-turn'}
+     */
+    getAgentModel() {
+        return localStorage.getItem('agentModel') || 'agent-multi-turn';
+    }
+
+    /**
+     * 设置 Agent 模式
+     * @param {'agent-plan-solve' | 'agent-multi-turn'} model
+     */
+    setAgentModel(model) {
+        const valid = ['agent-plan-solve', 'agent-multi-turn'];
+        if (valid.includes(model)) {
+            localStorage.setItem('agentModel', model);
+            console.log(`Agent 模式已切换为: ${model}`);
+        } else {
+            console.warn(`无效的 Agent 模式: ${model}，可选值: ${valid.join(', ')}`);
+        }
+    }
+
+    /**
+     * 发送对话消息（流式输出版本）
      */
     async sendChatMessage() {
         const inputEl = document.getElementById('chatInput');
@@ -1751,6 +1814,7 @@ class RadarWebApp {
         }
 
         const agentEndpoint = this.getHealthChatAgentOrigin();
+        const apiKey = this.getAgentApiKey();
         const sendBtn = document.getElementById('sendChatBtn');
 
         // 添加用户消息到界面
@@ -1760,46 +1824,109 @@ class RadarWebApp {
         sendBtn.textContent = '发送中...';
 
         // 添加AI思考中消息
-        const thinkingMessageId = this.addChatMessage('assistant', '正在思考中...', true);
+        const thinkingMessageId = this.addChatMessage('assistant', '', true);
 
         try {
             // 构建上下文信息
             const contextInfo = this.buildChatContext();
             const historyContext = this.buildChatHistoryContext(12);
 
-            // 构建完整查询
-            const fullQuery = `${contextInfo}${historyContext}\n\n用户问题: ${message}`;
+            // 构建 OpenAI 兼容的 messages 格式
+            const messages = [
+                { role: 'system', content: contextInfo },
+            ];
+            
+            // 添加历史对话
+            const chatHistory = JSON.parse(localStorage.getItem('petHealthChatHistory') || '[]');
+            const recent = chatHistory.slice(Math.max(0, chatHistory.length - 12));
+            for (const msg of recent) {
+                if (msg && (msg.role === 'user' || msg.role === 'assistant') && msg.content) {
+                    messages.push({ role: msg.role, content: msg.content });
+                }
+            }
+            
+            // 添加当前用户消息
+            messages.push({ role: 'user', content: message });
 
-            // 调用agent API
-            const response = await this.fetchWithTimeout(`${agentEndpoint}/agent/plan_and_solve`, {
+            // 获取用户选择的 Agent 模式（默认多轮）
+            const agentModel = localStorage.getItem('agentModel') || 'agent-multi-turn';
+
+            // 调用 OpenAI 兼容的流式 API
+            const response = await fetch(`${agentEndpoint}/v1/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify({
-                    query: fullQuery,
-                    allowed_tools: ['rag.search'],
+                    model: agentModel,  // 'agent-plan-solve' 或 'agent-multi-turn'
+                    messages: messages,
+                    stream: true,
                     temperature: 0.7,
-                    max_tokens: 1500
+                    max_tokens: 1500,
+                    tools: [{ function: { name: 'rag.search' } }],
                 })
-            }, 300000);
+            });
 
             if (!response.ok) {
-                throw new Error(`Agent API请求失败: ${response.status}`);
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error?.message || `API请求失败: ${response.status}`);
             }
 
-            const result = await response.json();
+            // 处理 SSE 流式响应
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullContent = '';
+            let buffer = '';
 
-            if (!result.ok) {
-                throw new Error(result.error?.message || '对话失败');
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const data = line.slice(6);
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const chunk = JSON.parse(data);
+                        const delta = chunk.choices?.[0]?.delta;
+                        const content = delta?.content;
+                        const agentStatus = chunk.agent_status;
+
+                        // 更新状态显示（多轮 Agent 有更多状态）
+                        if (agentStatus) {
+                            const statusMap = {
+                                'planning': '📋 正在制定计划...',
+                                'plan_complete': '✅ 计划完成',
+                                'thinking': '🤔 思考中...',
+                                'tool_calling': '🔍 正在搜索知识库...',
+                                'tool_complete': '✅ 搜索完成',
+                                'decided_final': '💡 决定生成回答',
+                                'generating': '💭 正在生成回答...',
+                                'streaming': '',
+                            };
+                            // 状态信息已包含在 content 中，不需要额外显示
+                            // 可以在这里更新 UI 状态指示器（如果有的话）
+                        }
+
+                        if (content) {
+                            fullContent += content;
+                            this.updateChatMessage(thinkingMessageId, fullContent);
+                        }
+                    } catch (e) {
+                        // 忽略解析错误
+                    }
+                }
             }
-
-            // 更新AI回复
-            this.updateChatMessage(thinkingMessageId, result.answer || '暂无回复');
 
             // 保存对话历史
             this.saveChatMessage('user', message);
-            this.saveChatMessage('assistant', result.answer || '暂无回复');
+            this.saveChatMessage('assistant', fullContent || '暂无回复');
 
         } catch (error) {
             console.error('对话失败:', error);

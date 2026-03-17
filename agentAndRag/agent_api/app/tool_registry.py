@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -7,18 +8,18 @@ from typing import Any, Callable, Dict, List, Optional
 @dataclass(frozen=True)
 class ToolSpec:
     """
-    A minimal tool spec for n8n / function-calling.
+    A minimal tool spec for function-calling.
 
     - name: stable identifier, e.g. "rag.search"
     - description: short human-readable description
-    - input_schema: JSON schema-like dict (keep it simple and stable)
-    - handler: callable(**kwargs) -> dict
+    - input_schema: JSON schema-like dict
+    - handler: sync or async callable(**kwargs) -> dict
     """
 
     name: str
     description: str
     input_schema: Dict[str, Any]
-    handler: Callable[..., Dict[str, Any]]
+    handler: Callable[..., Any]
 
 
 class ToolRegistry:
@@ -36,11 +37,24 @@ class ToolRegistry:
     def get(self, name: str) -> Optional[ToolSpec]:
         return self._tools.get(name)
 
-    def call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    async def call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch to sync or async handler transparently."""
         tool = self.get(name)
         if not tool:
             raise KeyError(f"Unknown tool: {name}")
         arguments = dict(arguments or {})
+        if asyncio.iscoroutinefunction(tool.handler):
+            return await tool.handler(**arguments)
+        return await asyncio.to_thread(tool.handler, **arguments)
+
+    def call_sync(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Backward-compatible synchronous call (for non-async contexts)."""
+        tool = self.get(name)
+        if not tool:
+            raise KeyError(f"Unknown tool: {name}")
+        arguments = dict(arguments or {})
+        if asyncio.iscoroutinefunction(tool.handler):
+            raise TypeError(f"Tool '{name}' is async; use 'await registry.call()' instead.")
         return tool.handler(**arguments)
 
 

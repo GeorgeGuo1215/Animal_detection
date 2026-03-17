@@ -16,6 +16,7 @@ class McpServerConfig:
     env: Dict[str, str] = field(default_factory=dict)
     url: Optional[str] = None
     enabled: bool = True
+    cwd: Optional[str] = None
 
 
 def _repo_root() -> Path:
@@ -68,6 +69,10 @@ def load_mcp_servers() -> List[McpServerConfig]:
         if not enabled:
             continue
 
+        raw_cwd = raw.get("cwd")
+        if not raw_cwd:
+            raw_cwd = str(_repo_root())
+
         cfg = McpServerConfig(
             name=name,
             transport=transport,
@@ -76,6 +81,7 @@ def load_mcp_servers() -> List[McpServerConfig]:
             env=dict(raw.get("env") or {}),
             url=raw.get("url"),
             enabled=bool(enabled),
+            cwd=raw_cwd,
         )
         servers.append(cfg)
     return servers

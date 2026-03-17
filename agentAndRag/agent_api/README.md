@@ -1,95 +1,61 @@
-## Agent Tools API（FastAPI，简易的agent及调用封装）
+# PetHealthAI Agent API
 
-目标：把 `RAG/` 封装成稳定的 Tools（JSON I/O），供 n8n / 大模型 Function Calling 调用，并留出“评估闭环”的接口扩展点和其他工具的拓展点。
+基于 FastAPI 的本地 Agent 服务，集成 RAG 知识库检索、MCP 工具扩展（比价 / 成分分析 / 营养运动计划），支持 OpenAI-compatible 流式接口、Plan-and-Solve 与多轮决策两种 Agent 架构。
 
-### 1) 安装
+## 架构总览
+
+```
+用户 (Web / curl / n8n)
+  │  POST /v1/chat/completions (SSE stream)
+  ▼
+FastAPI 中间件链
+  ├─ RateLimitMiddleware   (令牌桶限流, 30 req/min)
+  └─ APIKeyAuthMiddleware  (Bearer token 校验)
+  ▼
+routes_openai.py
+  ├─ agent-plan-solve   → 单轮: Plan → Tool Calls → Answer
+  └─ agent-multi-turn   → 多轮: 循环决策 (最多5轮 tool call)
+       │
+       ├─ rag.search                          (内置, RAG 检索)
+       ├─ mcp.price_watcher.price_compare     (MCP, 全网比价)
+       ├─ mcp.price_watcher.ingredient_check  (MCP, 成分禁忌分析)
+       ├─ mcp.nutritional_planner.calculate_meal_plan   (MCP, 热量/喂食计算)
+       └─ mcp.nutritional_planner.generate_exercise_plan (MCP, 运动建议)
+```
+
+## 快速开始
+
+### 1. 安装依赖
 
 ```bash
+cd agentAndRag
 pip install -r agent_api/requirements.txt
 pip install -r RAG/requirements.txt
-pip install -r lora/requirements.txt
 ```
 
-### 2) 启动
+### 2. 配置环境变量
 
-在仓库根目录运行：
+```bash
+# LLM API (必填)
+set OPENAI_BASE_URL=https://api.deepseek.com
+set OPENAI_API_KEY=sk-your-key
+set OPENAI_MODEL=deepseek-chat
+
+# 认证 (可选, 默认从 agent_api/keys.txt 读取)
+# set AGENT_DISABLE_AUTH=1
+```
+
+### 3. 启动服务
 
 ```bash
 python -m uvicorn agent_api.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-#### 2.2）MCP（Model Context Protocol）工具扩展
-
-本项目支持把 MCP 服务器中的工具“挂载”到本地 Tool Registry。
-
-启用方式（默认开启）：
-
-- 环境变量：`AGENT_ENABLE_MCP=1`
-- 配置文件：`agent_api/mcp_servers.json`
-- 或直接用环境变量注入：`MCP_SERVER_JSON`
-
-`agent_api/mcp_servers.json` 示例：
-
-```json
-{
-  "servers": [
-    {
-      "name": "sample",
-      "transport": "stdio",
-      "command": "python",
-      "args": ["-m", "mcp_server_example"],
-      "env": {},
-      "enabled": false
-    }
-  ]
-}
-```
-
-说明：
-
-- 目前实现的是 **stdio transport**（本地启动 MCP server 进程）
-- 会把 MCP tool 注册为 `mcp.{server}.{tool}`，例如 `mcp.sample.search`
-- 如果 `enabled=false` 或配置缺失，启动时会跳过，不影响原有工具
-
-#### 2.1）解决“HTTPS 页面调用 HTTP Agent 被浏览器拦截（Mixed Content）”
-
-你的 `web/` 会通过 GitHub Pages 以 **HTTPS** 方式部署，而浏览器会 **强制拦截** 从 HTTPS 页面发往 HTTP 的请求（即使 CORS 全开也没用）。
-
-因此生产环境要么：
-
-- **让 Agent 也提供 HTTPS**（推荐：用域名 + 证书；或用 Nginx/Caddy 反代提供 HTTPS）
-- 或者 **让 Web 与 Agent 同源（同域同协议）**，由反代把 `/agent/*` 转发到本机 HTTP 端口（浏览器只看到 HTTPS）
-
-本项目提供了一个更方便的启动入口：当配置证书路径时自动走 HTTPS：
-
-Windows CMD 示例：
-
-```bat
-set AGENT_HOST=0.0.0.0
-set AGENT_PORT=9001
-set AGENT_SSL_CERTFILE=fullchain.pem
-set AGENT_SSL_KEYFILE=privkey.pem
-python -m agent_api.app.serve
-```
-
-如果不设置 `AGENT_SSL_CERTFILE/AGENT_SSL_KEYFILE`，则默认以 HTTP 启动。
-
-#### 启动时预热 RAG 缓存
-
-默认预热（embedding + reranker）
-
-Windows CMD 示例：
-
-```bat
-set AGENT_WARMUP_RAG=1
-set AGENT_WARMUP_BM25=1
-set AGENT_WARMUP_RERANKER=1
-REM 如果你想关闭预热：
-REM set AGENT_WARMUP_RAG=0
-REM 如果你想让 embedding/reranker 上 GPU（你机器得有可用 CUDA）：
-REM set AGENT_WARMUP_DEVICE=cuda
-python -m uvicorn agent_api.app.main:app --host 127.0.0.1 --port 8000
-```
+启动时自动执行：
+- 加载 API Keys (`keys.txt`)
+- 注册内置工具 (rag.search, rag.reindex, debug.echo)
+- 注册 MCP 工具 (price_watcher, nutritional_planner)
+- **预热 RAG 缓存** (向量库 / Embedder / BM25 倒排索引 / Reranker / SourceIndex)
 
 健康检查：
 
@@ -97,83 +63,268 @@ python -m uvicorn agent_api.app.main:app --host 127.0.0.1 --port 8000
 curl http://127.0.0.1:8000/health
 ```
 
-### 3) Tool：RAG 检索
+### 4. HTTPS 启动 (可选)
+
+```bash
+set AGENT_SSL_CERTFILE=fullchain.pem
+set AGENT_SSL_KEYFILE=privkey.pem
+python -m agent_api.app.serve
+```
+
+## API 接口
+
+### `POST /v1/chat/completions` — OpenAI-compatible 聊天 (推荐入口)
+
+完全兼容 OpenAI Chat Completions API 格式，支持流式 SSE 和非流式两种模式。
+
+#### 请求格式
+
+```json
+{
+  "model": "agent-multi-turn",
+  "stream": true,
+  "temperature": 0.2,
+  "max_tokens": 768,
+  "messages": [
+    {"role": "system", "content": "你是一个宠物健康助手"},
+    {"role": "user", "content": "我的狗12kg，今天吃了200kcal，术后恢复期，帮我算一下还需要喂多少"}
+  ],
+  "tools": null
+}
+```
+
+#### 请求参数
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `model` | string | 否 | `agent-plan-solve` | `agent-plan-solve` (单轮 Plan→Solve) 或 `agent-multi-turn` (多轮决策循环) |
+| `messages` | array | 是 | - | OpenAI 标准 messages，支持 `system` / `user` / `assistant` role |
+| `stream` | bool | 否 | `false` | `true` 返回 SSE 流，`false` 返回完整 JSON |
+| `temperature` | float | 否 | `0.2` | LLM 温度 |
+| `max_tokens` | int | 否 | `768` | 最终回答最大 token 数 |
+| `tools` | array | 否 | `null` | 限制可用工具列表（OpenAI function 格式），`null` 使用默认全部工具 |
+| `tool_choice` | string | 否 | `auto` | `auto` / `none` |
+
+#### 认证
+
+请求头必须携带 Agent API Key（来自 `keys.txt`）：
+
+```
+Authorization: Bearer sk-pethealthai-default-key-2026
+```
+
+#### 流式响应 (stream=true)
+
+返回 SSE 事件流，每个 chunk 格式：
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion.chunk",
+  "model": "agent-multi-turn",
+  "choices": [{"delta": {"content": "..."}, "finish_reason": null}],
+  "agent_status": "thinking",
+  "agent_detail": {"message": "思考中...", "round": 1}
+}
+```
+
+`agent_status` 状态流转：`thinking` → `tool_calling` → `tool_complete` → `generating` → `streaming` → `stop`
+
+#### 非流式响应 (stream=false)
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "agent-plan-solve",
+  "choices": [{"message": {"role": "assistant", "content": "..."}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+  "plan": [{"type": "tool", "tool_name": "rag.search", "arguments": {...}}, {"type": "final"}],
+  "tool_results": [{"step": 0, "tool_name": "rag.search", "result": {...}}]
+}
+```
+
+非流式模式额外返回 `plan`（Agent 执行计划）和 `tool_results`（各步骤工具调用结果）。
+
+#### curl 示例
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-pethealthai-default-key-2026" ^
+  -d "{\"model\":\"agent-multi-turn\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"我的狗12kg，今天吃了200kcal，术后恢复期，帮我算一下还需要喂多少\"}]}"
+```
+
+#### `GET /v1/models`
+
+列出可用模型：
+
+```bash
+curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer sk-pethealthai-default-key-2026"
+```
+
+### Plan-and-Solve Agent (REST)
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent/plan_and_solve ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-pethealthai-default-key-2026" ^
+  -d "{\"query\":\"犬猫腹泻常见原因有哪些？\",\"temperature\":0.2,\"max_tokens\":800}"
+```
+
+### RAG 检索
 
 ```bash
 curl -X POST http://127.0.0.1:8000/tools/rag/search ^
   -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-pethealthai-default-key-2026" ^
   -d "{\"query\":\"What is BRDC?\",\"top_k\":5,\"multi_route\":true,\"rerank\":true,\"expand_neighbors\":1}"
 ```
 
-### 3.1) Tool Registry
-
-列出所有工具：
-
-```bash
-curl http://127.0.0.1:8000/tools
-```
-
-通用调用：
-
-```bash
-curl -X POST http://127.0.0.1:8000/tools/call ^
-  -H "Content-Type: application/json" ^
-  -d "{\"tool_name\":\"rag.search\",\"arguments\":{\"query\":\"What is BRDC?\",\"top_k\":5}}"
-```
-
-### 4) Tool：重建索引（入库）
+### 重建索引
 
 ```bash
 curl -X POST http://127.0.0.1:8000/tools/rag/reindex ^
   -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-pethealthai-default-key-2026" ^
   -d "{\"batch_size\":32}"
 ```
 
-### 5) Tool：LoRA checkpoint 指标评估（后台 job）
+### 工具列表 / 通用调用
 
 ```bash
-curl -X POST http://127.0.0.1:8000/tools/lora/eval_checkpoints ^
+# 列出所有已注册工具
+curl http://127.0.0.1:8000/tools -H "Authorization: Bearer sk-pethealthai-default-key-2026"
+
+# 通用工具调用
+curl -X POST http://127.0.0.1:8000/tools/call ^
   -H "Content-Type: application/json" ^
-  -d "{\"model_id\":\"Qwen/Qwen2.5-7B-Instruct\",\"output_dir\":\"out/qwen2.5-7b-animals\",\"checkpoints\":[\"checkpoint-138\",\"checkpoint-204\"],\"device_map\":\"cuda\"}"
+  -H "Authorization: Bearer sk-pethealthai-default-key-2026" ^
+  -d "{\"tool_name\":\"rag.search\",\"arguments\":{\"query\":\"canine parvovirus\",\"top_k\":3}}"
 ```
 
-查询 job 状态：
+### 会话管理
 
 ```bash
-curl http://127.0.0.1:8000/jobs/<job_id>
+# 创建会话
+curl -X POST http://127.0.0.1:8000/sessions -H "Authorization: Bearer ..."
+# 查询会话
+curl http://127.0.0.1:8000/sessions/{session_id} -H "Authorization: Bearer ..."
+# 删除会话
+curl -X DELETE http://127.0.0.1:8000/sessions/{session_id} -H "Authorization: Bearer ..."
 ```
 
-### 6) Trace（审计/论文截图）
+## MCP 工具扩展
 
-默认写到仓库根目录：`agent_api_logs/trace.jsonl`  
-可通过环境变量覆盖：
+配置文件：`agent_api/mcp_servers.json`
 
-- `AGENT_TRACE_DIR=...`
-
-### 7) Agent：Plan-and-Solve（一键：规划→调用 tools→回答）
-
-你可以把这当成“最小可用的 Agent Core”，n8n 里用一个 HTTP Request 节点就能跑通。
-
-#### 环境变量（推荐）
-
-- `OPENAI_BASE_URL`：OpenAI-compatible 网关地址（例如 DeepSeek / 自建网关）
-- `OPENAI_API_KEY`：API Key（也兼容 `DEEPSEEK_API_KEY`）
-- `OPENAI_MODEL`：模型名（也兼容 `DEEPSEEK_MODEL`）
-
-#### 调用示例
-
-```bash
-curl -X POST http://127.0.0.1:8000/agent/plan_and_solve ^
-  -H "Content-Type: application/json" ^
-  -d "{\"query\":\"犬猫腹泻常见原因有哪些？需要注意哪些红旗症状？\",\"temperature\":0.2,\"max_tokens\":800}"
+```json
+{
+  "servers": [
+    {
+      "name": "price_watcher",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_servers.price_watcher_pro"],
+      "enabled": true
+    },
+    {
+      "name": "nutritional_planner",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_servers.nutritional_planner"],
+      "enabled": true
+    }
+  ]
+}
 ```
 
-你也可以在请求里临时传入（方便在 n8n 里配置不同模型）：
+MCP 工具以 `mcp.{server}.{tool}` 命名注册到 ToolRegistry，Agent 自动识别调用。
 
-```bash
-curl -X POST http://127.0.0.1:8000/agent/plan_and_solve ^
-  -H "Content-Type: application/json" ^
-  -d "{\"query\":\"猪群高热、咳嗽可能是什么？\",\"llm_base_url\":\"https://api.openai.com\",\"llm_api_key\":\"sk-...\",\"llm_model\":\"gpt-4o-mini\"}"
+### Price_Watcher_Pro
+
+| 工具 | 功能 |
+|------|------|
+| `price_compare` | 跨平台比价 (DuckDuckGo + LLM 提取结构化价格) |
+| `ingredient_check` | 成分禁忌分析 (匹配健康状况 → 返回冲突或 `INSUFFICIENT_DATA`) |
+
+### Nutritional_Planner
+
+| 工具 | 功能 |
+|------|------|
+| `calculate_meal_plan` | 计算 RER/MER、热量平衡、下一餐克数 (支持 `FEEDING_INQUIRY_NEEDED` / `OVERFED_WARNING`) |
+| `generate_exercise_plan` | 根据热量差和医嘱生成运动建议 |
+
+## 环境变量参考
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `OPENAI_BASE_URL` | `https://api.deepseek.com` | LLM API 地址 |
+| `OPENAI_API_KEY` | - | LLM API Key |
+| `OPENAI_MODEL` | `deepseek-chat` | 模型名 |
+| `AGENT_DISABLE_AUTH` | `0` | 设为 `1` 跳过 API Key 校验 |
+| `AGENT_ENABLE_MCP` | `1` | 设为 `0` 禁用 MCP 工具 |
+| `AGENT_ENABLE_CORS` | `0` | 设为 `1` 开启 CORS |
+| `AGENT_RATE_LIMIT` | `30` | 每分钟请求上限 (per key) |
+| `AGENT_WARMUP_RAG` | `1` | 启动时预热 RAG 缓存 |
+| `AGENT_WARMUP_BM25` | `1` | 预热 BM25 倒排索引 |
+| `AGENT_WARMUP_RERANKER` | `1` | 预热 CrossEncoder 重排模型 |
+| `AGENT_WARMUP_DEVICE` | `cpu` | 预热设备 (`cpu` / `cuda`) |
+| `AGENT_TRACE_DIR` | `agent_api_logs/` | Trace 日志目录 |
+
+## RAG 检索性能
+
+166,990 chunks 索引下的基准测试（`RAG/experiments/bench_rag_latency.py`，RTX 3080 Ti）：
+
+| 环节 | CPU | GPU (CUDA) |
+|------|-----|------------|
+| Query Embedding | ~10ms | ~9ms |
+| Dense Search (numpy dot) | ~6ms | ~6ms |
+| BM25 Retrieve (倒排索引) | **~0.8ms** | **~0.8ms** |
+| Neighbor Context (预建索引) | **~0.02ms** | **~0.02ms** |
+| Reranker 10 passages | ~6.5s | **~346ms** |
+| Reranker 20 passages | - | **~784ms** |
+
+不含 Reranker 的热路径总延迟：**~17ms**。
+含 Reranker (GPU) 全路径：**~362ms**。
+重复查询命中 LRU 缓存：**~11ms**。
+
+> GPU 重排加速比：**19×**（6.5s → 346ms）。推荐设置 `AGENT_WARMUP_DEVICE=cuda`。
+
+## 项目结构
+
+```
+agentAndRag/
+├── agent_api/
+│   ├── app/
+│   │   ├── main.py              # FastAPI 入口, 启动预热, 路由注册
+│   │   ├── routes_openai.py     # /v1/chat/completions (SSE 流式)
+│   │   ├── plan_and_solve.py    # Plan-and-Solve / Async Agent 核心
+│   │   ├── rag_tools.py         # RAG 检索封装 (缓存/优化层)
+│   │   ├── tool_registry.py     # 统一工具注册与派发 (sync/async)
+│   │   ├── tools_builtin.py     # 内置工具注册
+│   │   ├── tools_mcp.py         # MCP 工具自动发现与注册
+│   │   ├── mcp_client.py        # MCP stdio 客户端 (async)
+│   │   ├── mcp_config.py        # MCP 服务器配置加载
+│   │   ├── llm_client.py        # LLM 客户端 (sync + async, 连接池)
+│   │   ├── llm_client_stream.py # LLM 流式客户端
+│   │   ├── auth.py              # API Key 认证中间件
+│   │   ├── rate_limit.py        # 令牌桶限流中间件
+│   │   ├── session_manager.py   # 会话管理 (TTL, 内存)
+│   │   ├── schemas.py           # REST 端点 Pydantic schemas
+│   │   └── schemas_openai.py    # OpenAI-compatible schemas
+│   ├── mcp_servers.json         # MCP 服务器配置
+│   ├── keys.txt                 # API Keys
+│   └── requirements.txt
+├── mcp_servers/
+│   ├── price_watcher_pro/       # 比价 + 成分分析 MCP Server
+│   └── nutritional_planner/     # 营养 + 运动计划 MCP Server
+└── RAG/
+    ├── simple_rag/              # 检索核心 (embeddings, retrieval, reranker, context)
+    ├── experiments/             # 评测 + 性能基准脚本
+    └── data/                    # 索引数据
 ```
 
+## Trace 审计
 
+所有请求自动写入 `agent_api_logs/trace.jsonl`，包含 trace_id、工具名、请求参数、响应摘要。可通过 `AGENT_TRACE_DIR` 更改路径。

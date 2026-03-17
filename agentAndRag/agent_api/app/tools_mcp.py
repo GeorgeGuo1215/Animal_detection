@@ -3,16 +3,18 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from .mcp_client import call_mcp_tool, list_mcp_tools
+from .mcp_client import call_mcp_tool, call_mcp_tool_async, list_mcp_tools
 from .mcp_config import McpServerConfig, load_mcp_servers
 from .tool_registry import ToolRegistry, ToolSpec
 
 logger = logging.getLogger(__name__)
 
 
-def _make_handler(server: McpServerConfig, tool_name: str):
-    def _handler(**kwargs: Any) -> Dict[str, Any]:
-        return call_mcp_tool(server, tool_name, kwargs)
+def _make_async_handler(server: McpServerConfig, tool_name: str):
+    """Return an async handler that calls the MCP tool natively."""
+
+    async def _handler(**kwargs: Any) -> Dict[str, Any]:
+        return await call_mcp_tool_async(server, tool_name, kwargs)
 
     return _handler
 
@@ -20,9 +22,10 @@ def _make_handler(server: McpServerConfig, tool_name: str):
 def register_mcp_tools(registry: ToolRegistry) -> Dict[str, Any]:
     """
     Load MCP servers from config and register each MCP tool into ToolRegistry.
+    Uses async handlers so the event loop is not blocked during MCP calls.
     """
     servers = load_mcp_servers()
-    summary = {"servers": [], "tools": 0}
+    summary: Dict[str, Any] = {"servers": [], "tools": 0}
 
     for server in servers:
         try:
@@ -46,7 +49,7 @@ def register_mcp_tools(registry: ToolRegistry) -> Dict[str, Any]:
                     name=name,
                     description=f"[mcp:{server.name}] {description}".strip(),
                     input_schema=input_schema,
-                    handler=_make_handler(server, tool_name),
+                    handler=_make_async_handler(server, tool_name),
                 )
             )
             summary["tools"] += 1

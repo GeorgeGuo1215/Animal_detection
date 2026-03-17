@@ -17,7 +17,7 @@ from simple_rag.vector_store import NumpyVectorStore  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RAG 检索评测：Recall@K / Precision@K / MRR / nDCG / Book-Acc")
-    parser.add_argument("--index-dir", type=str, default="RAG/data/rag_index", help="向量库目录（embeddings.npy/meta.jsonl）")
+    parser.add_argument("--index-dir", type=str, default="RAG/data/rag_index_e5", help="向量库目录（embeddings.npy/meta.jsonl）")
     parser.add_argument("--evalset", type=str, default="RAG/experiments/out/eval_silver.jsonl")
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument(

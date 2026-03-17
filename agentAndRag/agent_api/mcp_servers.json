@@ -1,12 +1,20 @@
 {
   "servers": [
     {
-      "name": "sample",
+      "name": "price_watcher",
       "transport": "stdio",
       "command": "python",
-      "args": ["-m", "mcp_server_example"],
+      "args": ["-m", "mcp_servers.price_watcher_pro"],
       "env": {},
-      "enabled": false
+      "enabled": true
+    },
+    {
+      "name": "nutritional_planner",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_servers.nutritional_planner"],
+      "env": {},
+      "enabled": true
     }
   ]
 }

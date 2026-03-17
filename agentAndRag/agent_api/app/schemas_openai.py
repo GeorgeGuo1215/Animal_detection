@@ -38,6 +38,9 @@ class ChatCompletionRequest(BaseModel):
     tools: Optional[List[Dict[str, Any]]] = None  # Available tools list
     tool_choice: Optional[Union[str, Dict]] = "auto"  # "none", "auto", or specific tool
 
+    # Debug: return per-step timing in the response
+    debug_timing: Optional[bool] = True
+
 
 class ChatCompletionChoice(BaseModel):
     """Single choice in chat completion response."""
@@ -65,6 +68,7 @@ class ChatCompletionResponse(BaseModel):
     # Extension: agent-specific metadata
     plan: Optional[List[Dict[str, Any]]] = None
     tool_results: Optional[List[Dict[str, Any]]] = None
+    timing: Optional[List[Dict[str, Any]]] = None
 
 
 # Streaming response types

@@ -21,6 +21,8 @@ def _require_mcp() -> None:
 
 
 def _run_sync(coro: Any) -> Any:
+    """Legacy sync wrapper -- kept for backward compatibility only."""
+    """通过线程隔离创建独立事件循环"""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -85,10 +87,16 @@ async def _with_session(cfg: McpServerConfig, fn: Any) -> Any:
     if not cfg.command:
         raise ValueError(f"MCP server '{cfg.name}' missing command for stdio transport.")
 
+    env = dict(cfg.env or {})
+    if cfg.cwd:
+        import os as _os
+        existing_pp = env.get("PYTHONPATH", _os.environ.get("PYTHONPATH", ""))
+        env["PYTHONPATH"] = f"{cfg.cwd}{_os.pathsep}{existing_pp}" if existing_pp else cfg.cwd
+
     params = StdioServerParameters(
         command=str(cfg.command),
         args=list(cfg.args or []),
-        env=dict(cfg.env or {}),
+        env=env if env else None,
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -96,7 +104,9 @@ async def _with_session(cfg: McpServerConfig, fn: Any) -> Any:
             return await fn(session)
 
 
-async def _list_tools_async(cfg: McpServerConfig) -> List[Dict[str, Any]]:
+# ── Async API (preferred) ──────────────────────────────────────────────
+
+async def list_mcp_tools_async(cfg: McpServerConfig) -> List[Dict[str, Any]]:
     async def _do(session: Any) -> List[Dict[str, Any]]:
         result = await session.list_tools()
         tools = getattr(result, "tools", None) or []
@@ -105,7 +115,7 @@ async def _list_tools_async(cfg: McpServerConfig) -> List[Dict[str, Any]]:
     return await _with_session(cfg, _do)
 
 
-async def _call_tool_async(cfg: McpServerConfig, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+async def call_mcp_tool_async(cfg: McpServerConfig, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     async def _do(session: Any) -> Dict[str, Any]:
         result = await session.call_tool(tool_name, arguments)
         return _normalize_call_result(result)
@@ -113,9 +123,11 @@ async def _call_tool_async(cfg: McpServerConfig, tool_name: str, arguments: Dict
     return await _with_session(cfg, _do)
 
 
+# ── Sync wrappers (backward compatibility) ─────────────────────────────
+
 def list_mcp_tools(cfg: McpServerConfig) -> List[Dict[str, Any]]:
-    return _run_sync(_list_tools_async(cfg))
+    return _run_sync(list_mcp_tools_async(cfg))
 
 
 def call_mcp_tool(cfg: McpServerConfig, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    return _run_sync(_call_tool_async(cfg, tool_name, arguments or {}))
+    return _run_sync(call_mcp_tool_async(cfg, tool_name, arguments or {}))

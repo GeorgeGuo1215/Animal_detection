@@ -11,7 +11,7 @@ from typing import List
 
 from RAG.simple_rag.config import RagConfig, default_config
 from RAG.simple_rag.pipeline import search
-from RAG.simple_rag.query_rewrite import NoRewrite, TemplateRewriter
+from RAG.simple_rag.query_rewrite import LLMRewriter, NoRewrite, TemplateRewriter
 from RAG.simple_rag.retrieval import build_default_multiroute
 from RAG.simple_rag.context_utils import build_neighbor_contexts
 from RAG.simple_rag.reranker import CrossEncoderReranker
@@ -62,9 +62,14 @@ def main() -> None:
         "--rewrite",
         type=str,
         default="template",
-        choices=["none", "template"],
+        choices=["none", "template", "llm"],
         help="query 重写策略（用于 multi-route）",
     )
+    parser.add_argument("--rewrite-base-url", type=str, default=None, help="LLM 重写使用的 OpenAI-compatible base URL")
+    parser.add_argument("--rewrite-api-key", type=str, default=None, help="LLM 重写使用的 API Key（默认环境变量）")
+    parser.add_argument("--rewrite-model", type=str, default=None, help="LLM 重写使用的模型名（默认环境变量）")
+    parser.add_argument("--rewrite-max-out", type=int, default=5, help="LLM/template 重写最多返回多少个 query")
+    parser.add_argument("--rewrite-timeout-s", type=float, default=60.0, help="LLM 重写请求超时秒数")
     parser.add_argument(
         "--expand-neighbors",
         type=int,
@@ -117,7 +122,18 @@ def main() -> None:
     if not args.multi_route:
         hits = search(cfg, args.query, top_k=retrieve_k, device=args.device)
     else:
-        rewriter = NoRewrite() if args.rewrite == "none" else TemplateRewriter()
+        if args.rewrite == "none":
+            rewriter = NoRewrite()
+        elif args.rewrite == "llm":
+            rewriter = LLMRewriter(
+                base_url=args.rewrite_base_url,
+                api_key=args.rewrite_api_key,
+                model=args.rewrite_model,
+                max_out=int(args.rewrite_max_out),
+                timeout_s=float(args.rewrite_timeout_s),
+            )
+        else:
+            rewriter = TemplateRewriter(max_out=int(args.rewrite_max_out))
         mr = build_default_multiroute(
             index_dir=str(cfg.index_dir),
             embedding_model=cfg.embedding_model,

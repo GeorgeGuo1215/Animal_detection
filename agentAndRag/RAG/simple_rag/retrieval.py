@@ -80,32 +80,37 @@ def _tokenize(text: str) -> List[str]:
 
 class BM25Retriever:
     """
-    轻量 BM25（不引入额外依赖）。
+    轻量 BM25（不引入额外依赖），使用倒排索引加速检索。
     """
 
     def __init__(self, *, metas: List[dict], k1: float = 1.5, b: float = 0.75) -> None:
         self.metas = metas
         self.k1 = float(k1)
         self.b = float(b)
+        self.N = len(metas)
 
-        self.doc_len: List[int] = []
-        self.avgdl = 0.0
+        self.doc_len = np.empty(self.N, dtype=np.float32)
         self.df: Dict[str, int] = {}
-        self.tf: List[Dict[str, int]] = []
+        # term -> (doc_indices_array, term_freq_array)
+        self._inverted: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
-        for m in metas:
+        term_postings: Dict[str, List[Tuple[int, int]]] = {}
+        for i, m in enumerate(metas):
             toks = _tokenize(m.get("text", ""))
             tf: Dict[str, int] = {}
             for t in toks:
                 tf[t] = tf.get(t, 0) + 1
-            self.tf.append(tf)
-            dl = sum(tf.values())
-            self.doc_len.append(dl)
-            for t in tf.keys():
+            self.doc_len[i] = float(sum(tf.values()))
+            for t, f in tf.items():
                 self.df[t] = self.df.get(t, 0) + 1
+                term_postings.setdefault(t, []).append((i, f))
 
-        self.N = len(metas)
-        self.avgdl = (sum(self.doc_len) / self.N) if self.N else 0.0
+        self.avgdl = float(self.doc_len.mean()) if self.N else 0.0
+
+        for t, postings in term_postings.items():
+            ids = np.array([p[0] for p in postings], dtype=np.int32)
+            freqs = np.array([p[1] for p in postings], dtype=np.float32)
+            self._inverted[t] = (ids, freqs)
 
     def _idf(self, term: str) -> float:
         df = self.df.get(term, 0)
@@ -116,16 +121,16 @@ class BM25Retriever:
         if not q_terms or self.N == 0:
             return []
 
-        scores = np.zeros((self.N,), dtype=np.float32)
+        scores = np.zeros(self.N, dtype=np.float32)
         for t in q_terms:
+            posting = self._inverted.get(t)
+            if posting is None:
+                continue
+            ids, freqs = posting
             idf = self._idf(t)
-            for i, tf in enumerate(self.tf):
-                f = tf.get(t, 0)
-                if f <= 0:
-                    continue
-                dl = self.doc_len[i]
-                denom = f + self.k1 * (1.0 - self.b + self.b * (dl / (self.avgdl + 1e-9)))
-                scores[i] += idf * (f * (self.k1 + 1.0) / (denom + 1e-9))
+            dl = self.doc_len[ids]
+            denom = freqs + self.k1 * (1.0 - self.b + self.b * (dl / (self.avgdl + 1e-9)))
+            scores[ids] += idf * (freqs * (self.k1 + 1.0) / (denom + 1e-9))
 
         k = min(int(top_k), self.N)
         idx = np.argpartition(-scores, kth=k - 1)[:k]

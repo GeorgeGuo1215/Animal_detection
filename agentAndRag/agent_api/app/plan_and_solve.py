@@ -197,9 +197,9 @@ class AsyncPlanAndSolveAgent:
             "你必须输出严格 JSON，不要输出任何额外文字。"
             "你的目标是：用尽量少的步骤解决用户问题。\n"
             "工具选择指南：\n"
-            "- 健康/医学知识查询 → rag.search (英文query)\n"
-            "- 产品价格比较 → mcp.price_watcher.price_compare\n"
-            "- 产品成分安全性 → mcp.price_watcher.ingredient_check\n"
+            "- 健康/医学知识查询 → rag.search (英文 query)\n"
+            "- 实时网络信息 / 产品信息 / 价格线索 → mcp.web_search.web_search\n"
+            "- 产品成分安全性 → mcp.web_search.ingredient_check\n"
             "- 喂食量/热量计算 → mcp.nutritional_planner.calculate_meal_plan\n"
             "- 运动计划 → mcp.nutritional_planner.generate_exercise_plan\n"
             "对于 rag.search 使用英语查询，其他工具按其 input_schema 填写参数。"
@@ -268,14 +268,30 @@ class AsyncPlanAndSolveAgent:
             else:
                 continue
 
+        _citation_rules = (
+            "\n\n## 网络搜索结果引用规范\n"
+            "当回答中使用了 web_search 工具返回的信息时，必须遵循以下引用规则：\n"
+            "1. 优先使用最新、最权威的信息源（官方网站、学术机构、主流媒体），而非聚合站点。\n"
+            "2. 使用行内引用标记 [^N^] 标注来源（N 为搜索结果的序号，从 1 开始）。\n"
+            "3. 只引用直接支撑你回答的来源；如果去掉该来源不影响回答，则不引用。\n"
+            "4. 引用具体事实（数字、日期、统计、官方声明），而非常识。\n"
+            "5. 每个事实只标注一个 [^N^]，放在句末；同一段落最多一个引用标记。\n"
+            "6. 在回答末尾附上「参考来源」列表，格式为：[^N^] 标题 — URL\n"
+            "7. 如果搜索结果之间相互矛盾或信息不足，明确告知用户并给出下一步建议。\n"
+        )
+        has_web_search = any(
+            r.get("tool_name", "").startswith("mcp.web_search") for r in tool_results
+        )
         sys = (
             "你是一个面向兽医/动物健康方向的 AI 助手。"
-            "你拥有以下能力：知识库检索、产品比价与成分分析、营养与运动计划制定。"
+            "你拥有以下能力：知识库检索、网络搜索与成分分析、营养与运动计划制定。"
             "请用中文回答，必要时引用你从工具返回的证据片段（简短引用即可）。"
             "如果工具返回 INSUFFICIENT_DATA，请明确告知用户需要提供更多信息（如拍摄产品成分表）。"
             "如果工具返回 FEEDING_INQUIRY_NEEDED，请主动询问用户宠物今天是否已经进食。"
             "如果证据不足，请明确说不确定，并给出下一步建议。"
         )
+        if has_web_search:
+            sys += _citation_rules
         user = {
             "query": query,
             "plan": plan_steps,

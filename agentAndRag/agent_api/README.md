@@ -16,11 +16,11 @@ routes_openai.py
   ├─ agent-plan-solve   → 单轮: Plan → Tool Calls → Answer
   └─ agent-multi-turn   → 多轮: 循环决策 (最多5轮 tool call)
        │
-       ├─ rag.search                          (内置, RAG 检索)
-       ├─ mcp.price_watcher.price_compare     (MCP, 全网比价)
-       ├─ mcp.price_watcher.ingredient_check  (MCP, 成分禁忌分析)
-       ├─ mcp.nutritional_planner.calculate_meal_plan   (MCP, 热量/喂食计算)
-       └─ mcp.nutritional_planner.generate_exercise_plan (MCP, 运动建议)
+      ├─ rag.search                          (内置, RAG 检索)
+      ├─ mcp.web_search.web_search           (MCP, Tavily 实时网络搜索)
+      ├─ mcp.web_search.ingredient_check     (MCP, 成分禁忌分析)
+      ├─ mcp.nutritional_planner.calculate_meal_plan   (MCP, 热量/喂食计算)
+      └─ mcp.nutritional_planner.generate_exercise_plan (MCP, 运动建议)
 ```
 
 ## 快速开始

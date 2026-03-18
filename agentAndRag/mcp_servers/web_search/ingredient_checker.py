@@ -2,7 +2,7 @@
 Ingredient safety checker against a contraindications database.
 
 Flow:
-1. Search for product ingredient list via DuckDuckGo + LLM
+1. Search for product ingredient list via Tavily web search (MCP) + LLM
 2. Cross-reference against contraindications.json
 3. Return conflicts or INSUFFICIENT_DATA if ingredients are unavailable
 """
@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+from .tavily_client import tavily_search
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,7 @@ def _load_contraindications() -> Dict[str, Any]:
     return _CONTRAINDICATIONS
 
 
-def _llm_call(prompt: str, max_tokens: int = 1024) -> str:
+async def _llm_call(prompt: str, max_tokens: int = 1024) -> str:
     if not _LLM_KEY:
         return "{}"
     url = f"{_LLM_BASE}/chat/completions"
@@ -52,8 +54,8 @@ def _llm_call(prompt: str, max_tokens: int = 1024) -> str:
         "response_format": {"type": "json_object"},
     }
     headers = {"Authorization": f"Bearer {_LLM_KEY}", "Content-Type": "application/json"}
-    with httpx.Client(timeout=60) as client:
-        r = client.post(url, headers=headers, json=payload)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=headers, json=payload)
         r.raise_for_status()
         data = r.json()
     try:
@@ -62,26 +64,17 @@ def _llm_call(prompt: str, max_tokens: int = 1024) -> str:
         return "{}"
 
 
-def _search_ingredients(product_name: str) -> Optional[tuple]:
-    """Try to find ingredient list via web search + LLM extraction."""
-    try:
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(f"{product_name} ingredients list", max_results=5))
-    except ImportError:
-        logger.warning("ddgs / duckduckgo-search not installed")
-        return None
-    except Exception as exc:
-        logger.warning("Ingredient search failed: %s", exc)
-        return None
-
+async def _search_ingredients(product_name: str) -> Optional[tuple]:
+    """Try to find ingredient list via Tavily web search (MCP) + LLM extraction."""
+    results = await tavily_search(
+        query=f"{product_name} ingredients list",
+        max_results=8,
+        search_depth="basic",
+    )
     if not results:
         return None
 
-    snippets = "\n".join(r.get("body", "") for r in results)[:3000]
+    snippets = "\n".join(r.get("content", "") for r in results)[:3000]
     prompt = f"""From these search results, extract the ingredient list for "{product_name}".
 
 Search results:
@@ -104,7 +97,7 @@ Output JSON:
 If you cannot find clear ingredient information, set ingredients_found to false.
 """
     try:
-        raw = _llm_call(prompt)
+        raw = await _llm_call(prompt)
     except Exception as exc:
         logger.warning("LLM extraction failed: %s", exc)
         return None
@@ -140,7 +133,7 @@ def _find_matching_conditions(health_context: str) -> List[Dict[str, Any]]:
     return matches
 
 
-def check_ingredients(
+async def check_ingredients(
     product_name: str,
     current_health_context: str,
 ) -> Dict[str, Any]:
@@ -161,7 +154,7 @@ def check_ingredients(
             "confidence": "medium",
         }
 
-    search_result = _search_ingredients(product_name)
+    search_result = await _search_ingredients(product_name)
 
     if search_result is None:
         return {

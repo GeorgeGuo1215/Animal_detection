@@ -46,6 +46,7 @@ def _run_sync(coro: Any) -> Any:
 
 
 def _normalize_tool(tool: Any) -> Dict[str, Any]:
+    """规范化 MCP 工具列表"""
     name = getattr(tool, "name", "") or ""
     description = getattr(tool, "description", "") or ""
     input_schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None) or {}
@@ -81,22 +82,44 @@ def _normalize_call_result(result: Any) -> Dict[str, Any]:
 
 
 async def _with_session(cfg: McpServerConfig, fn: Any) -> Any:
+    """
+    建立 MCP stdio 连接，初始化会话，执行业务函数，清理资源。
+    
+    流程：
+    1. 构建子进程环境（继承父进程环境变量 + 自定义变量 + PYTHONPATH）
+    2. 启动 MCP 服务器子进程，建立 stdio 管道
+    3. 初始化 MCP 会话（握手协议）
+    4. 执行业务函数 fn(session)
+    5. 自动清理：关闭会话，终止子进程
+    """
     _require_mcp()
     if cfg.transport != "stdio":
         raise ValueError(f"Unsupported MCP transport: {cfg.transport}")
     if not cfg.command:
         raise ValueError(f"MCP server '{cfg.name}' missing command for stdio transport.")
 
-    env = dict(cfg.env or {})
+    import os as _os
+    import re as _re
+
+    # 继承父进程完整环境，再叠加配置中的变量
+    env = dict(_os.environ)
+    for k, v in (cfg.env or {}).items():
+        # 解析 ${VAR} 模板，从父进程环境取值
+        resolved = _re.sub(
+            r"\$\{(\w+)\}",
+            lambda m: _os.environ.get(m.group(1), ""),
+            str(v),
+        )
+        env[k] = resolved
+
     if cfg.cwd:
-        import os as _os
-        existing_pp = env.get("PYTHONPATH", _os.environ.get("PYTHONPATH", ""))
+        existing_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{cfg.cwd}{_os.pathsep}{existing_pp}" if existing_pp else cfg.cwd
 
     params = StdioServerParameters(
         command=str(cfg.command),
         args=list(cfg.args or []),
-        env=env if env else None,
+        env=env,
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:

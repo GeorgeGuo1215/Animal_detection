@@ -1,0 +1,32 @@
+[Unit]
+Description=Panda Mind Agent (Panda_agent, port 8001)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sam
+Group=sam
+WorkingDirectory=/home/sam/Animal_Detection/Animal_detection/Panda_agent
+EnvironmentFile=/home/sam/Animal_Detection/Animal_detection/Panda_agent/.env
+Environment=PATH=/home/sam/anaconda3/envs/AnimalDetection/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64
+ExecStart=/home/sam/anaconda3/envs/AnimalDetection/bin/python -m uvicorn agent_api.app.main:app --host 0.0.0.0 --port 8001
+
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=panda-mind
+
+TimeoutStartSec=180
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

@@ -10,9 +10,11 @@ This module provides:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
+from datetime import date
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import APIRouter, Request
@@ -20,7 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from .llm_client import AsyncOpenAIClient, extract_text
 from .llm_client_stream import AsyncOpenAIStreamClient
-from .plan_and_solve import AsyncPlanAndSolveAgent, _safe_json_loads
+from .plan_and_solve import AsyncPlanAndSolveAgent, _safe_json_loads, build_solve_prompt
 from .schemas_openai import (
     ChatCompletionChunk,
     ChatCompletionChunkChoice,
@@ -33,6 +35,7 @@ from .schemas_openai import (
 )
 from .tool_registry import get_registry
 from .trace_store import new_trace_id, write_trace
+from .qa_store import save_qa_record
 
 
 router = APIRouter()
@@ -221,6 +224,7 @@ async def _stream_multi_turn_agent(
     max_tokens: int,
     allowed_tools: Optional[List[str]],
     debug_timing: bool = False,
+    user_role: str = "pet_owner",
 ) -> AsyncGenerator[str, None]:
     created = _now_ts()
     reg = get_registry()
@@ -318,11 +322,13 @@ async def _stream_multi_turn_agent(
                     "result": result,
                 })
 
-                hits_count = len(result.get("hits", [])) if isinstance(result, dict) else 0
+                hits = result.get("hits", []) if isinstance(result, dict) else []
+                hits_count = len(hits)
+                best_score = max((h.get("score", 0.0) for h in hits), default=0.0) if hits else 0.0
                 yield make_chunk(
                     content=f"   Found {hits_count} relevant results\n",
                     status="tool_complete",
-                    detail={"tool_name": tool_name, "hits_count": hits_count, "round": round_num + 1}
+                    detail={"tool_name": tool_name, "hits_count": hits_count, "best_score": best_score, "round": round_num + 1}
                 )
 
                 special_msg = _check_special_flags(result)
@@ -355,17 +361,8 @@ async def _stream_multi_turn_agent(
         status="generating"
     )
 
-    sys_prompt = (
-        "你是一个面向兽医/动物健康方向的 AI 助手。"
-        "你拥有以下能力：知识库检索、网络搜索与成分分析、营养与运动计划制定。"
-        "请用中文回答，必要时引用你从工具返回的证据片段（简短引用即可）。"
-        "如果工具返回 INSUFFICIENT_DATA，请明确告知用户需要提供更多信息（如提供产品成分表）。"
-        "如果工具返回 FEEDING_INQUIRY_NEEDED，请主动询问用户宠物今天是否已经进食。"
-        "如果证据不足，请明确说不确定，并给出下一步建议。"
-    )
     has_web_search = any(r.get("tool_name", "").startswith("mcp.web_search") for r in tool_results)
-    if has_web_search:
-        sys_prompt += _WEB_SEARCH_CITATION_RULES
+    sys_prompt = build_solve_prompt(user_role=user_role, has_web_search=has_web_search, query=query)
     if system_context:
         sys_prompt = f"{system_context}\n\n{sys_prompt}"
 
@@ -418,6 +415,7 @@ async def _stream_plan_and_solve(
     max_tokens: int,
     allowed_tools: Optional[List[str]],
     debug_timing: bool = False,
+    user_role: str = "pet_owner",
 ) -> AsyncGenerator[str, None]:
     created = _now_ts()
     reg = get_registry()
@@ -466,72 +464,132 @@ async def _stream_plan_and_solve(
     tool_results: List[Dict[str, Any]] = []
     allowed = set(allowed_tools) if allowed_tools else None
 
+    # --- Collect tool steps, then execute in parallel if possible ---
+    tool_steps: List[Dict[str, Any]] = []
     for i, step in enumerate(plan):
-        stype = step.get("type")
-        if stype == "tool":
+        if step.get("type") == "tool":
             tool_name = str(step.get("tool_name") or "")
-            if not tool_name:
+            if not tool_name or (allowed is not None and tool_name not in allowed):
                 continue
-            if allowed is not None and tool_name not in allowed:
-                continue
-
             args = step.get("arguments") or {}
             if not isinstance(args, dict):
                 args = {}
-
             if tool_name == "rag.search":
                 args = agent._force_rag_search_defaults(args)
+            tool_steps.append({"step": i, "tool_name": tool_name, "arguments": args})
+        elif step.get("type") == "final":
+            break
 
+    if len(tool_steps) >= 2:
+        yield make_chunk(
+            content=f"\n**Parallel execution**: {', '.join(s['tool_name'] for s in tool_steps)}\n",
+            status="tool_calling",
+            detail={"parallel": True, "count": len(tool_steps)},
+        )
+        t0 = time.perf_counter()
+
+        async def _run_tool(ts: Dict[str, Any]) -> Dict[str, Any]:
+            try:
+                result = await reg.call(ts["tool_name"], ts["arguments"])
+                return {**ts, "result": result}
+            except Exception as exc:
+                return {**ts, "error": str(exc)}
+
+        gathered = await asyncio.gather(*[_run_tool(ts) for ts in tool_steps], return_exceptions=False)
+        _lap("parallel_tools", t0)
+
+        for tr in gathered:
+            tool_results.append(tr)
+            if "error" in tr:
+                yield make_chunk(content=f"   {tr['tool_name']}: failed ({tr['error']})\n")
+            else:
+                result = tr.get("result", {})
+                hits = result.get("hits", []) if isinstance(result, dict) else []
+                hits_count = len(hits)
+                best_score = max((h.get("score", 0.0) for h in hits), default=0.0) if hits else 0.0
+                yield make_chunk(
+                    content=f"   {tr['tool_name']}: {hits_count} results\n",
+                    status="tool_complete",
+                    detail={"tool_name": tr["tool_name"], "hits_count": hits_count, "best_score": best_score},
+                )
+                special_msg = _check_special_flags(result)
+                if special_msg:
+                    yield make_chunk(content=special_msg, status="user_action_needed")
+    else:
+        for ts in tool_steps:
             yield make_chunk(
-                content=f"\n**Executing tool**: {tool_name}\n",
+                content=f"\n**Executing tool**: {ts['tool_name']}\n",
                 status="tool_calling",
-                detail={"tool_name": tool_name, "step": i}
+                detail={"tool_name": ts["tool_name"], "step": ts["step"]},
             )
-
             t0 = time.perf_counter()
             try:
-                result = await reg.call(tool_name, args)
-                _lap(f"step_{i}_tool_{tool_name}", t0)
-                tool_results.append({
-                    "step": i,
-                    "tool_name": tool_name,
-                    "arguments": args,
-                    "result": result
-                })
-
-                hits_count = len(result.get("hits", [])) if isinstance(result, dict) else 0
+                result = await reg.call(ts["tool_name"], ts["arguments"])
+                _lap(f"step_{ts['step']}_tool_{ts['tool_name']}", t0)
+                tool_results.append({**ts, "result": result})
+                hits = result.get("hits", []) if isinstance(result, dict) else []
+                hits_count = len(hits)
+                best_score = max((h.get("score", 0.0) for h in hits), default=0.0) if hits else 0.0
                 yield make_chunk(
                     content=f"Found {hits_count} relevant results\n",
                     status="tool_complete",
-                    detail={"tool_name": tool_name, "hits_count": hits_count}
+                    detail={"tool_name": ts["tool_name"], "hits_count": hits_count, "best_score": best_score},
                 )
-
                 special_msg = _check_special_flags(result)
                 if special_msg:
                     yield make_chunk(content=special_msg, status="user_action_needed")
             except Exception as e:
-                _lap(f"step_{i}_tool_{tool_name}_error", t0)
+                _lap(f"step_{ts['step']}_tool_{ts['tool_name']}_error", t0)
                 yield make_chunk(content=f"Tool call failed: {e}\n")
+                tool_results.append({**ts, "error": str(e)})
 
-        elif stype == "final":
-            break
+    # --- RAG fallback: auto web search when RAG results are insufficient or irrelevant ---
+    _WEB_TOOL = "mcp.web_search.web_search"
+    _rag_results = [
+        r for r in tool_results
+        if r.get("tool_name") == "rag.search" and isinstance(r.get("result"), dict)
+    ]
+    rag_hits_total = sum(len(r["result"].get("hits", [])) for r in _rag_results)
+    rag_best_score = max(
+        (hit.get("score", 0.0) for r in _rag_results for hit in r["result"].get("hits", [])),
+        default=0.0,
+    )
+    _RAG_RELEVANCE_THRESHOLD = 0.55
+    already_has_web = any(r.get("tool_name") == _WEB_TOOL for r in tool_results)
+    _need_web = (rag_hits_total < 2) or (rag_hits_total > 0 and rag_best_score < _RAG_RELEVANCE_THRESHOLD)
+    if _need_web and not already_has_web and _WEB_TOOL in (allowed_tools or []):
+        _fallback_reason = (
+            f"RAG only returned {rag_hits_total} hits"
+            if rag_hits_total < 2
+            else f"RAG best score {rag_best_score:.3f} < {_RAG_RELEVANCE_THRESHOLD} (irrelevant content)"
+        )
+        yield make_chunk(
+            content=f"\n**Fallback**: web_search ({_fallback_reason})\n",
+            status="tool_calling",
+            detail={"tool_name": _WEB_TOOL, "step": "fallback", "reason": _fallback_reason},
+        )
+        t0 = time.perf_counter()
+        try:
+            web_result = await reg.call(_WEB_TOOL, {"query": query, "max_results": 5, "search_depth": "advanced"})
+            _lap("fallback_web_search", t0)
+            tool_results.append({"step": "fallback", "tool_name": _WEB_TOOL, "arguments": {"query": query}, "result": web_result})
+            web_count = len(web_result.get("results", [])) if isinstance(web_result, dict) else 0
+            yield make_chunk(
+                content=f"Found {web_count} web results\n",
+                status="tool_complete",
+                detail={"tool_name": _WEB_TOOL, "hits_count": web_count},
+            )
+        except Exception as e:
+            _lap("fallback_web_search_error", t0)
+            yield make_chunk(content=f"Web search fallback failed: {e}\n")
 
     yield make_chunk(
         content="\n**Generating response...**\n\n",
         status="generating"
     )
 
-    sys_prompt = (
-        "你是一个面向兽医/动物健康方向的 AI 助手。"
-        "你拥有以下能力：知识库检索、网络搜索与成分分析、营养与运动计划制定。"
-        "请用中文回答，必要时引用你从工具返回的证据片段（简短引用即可）。"
-        "如果工具返回 INSUFFICIENT_DATA，请明确告知用户需要提供更多信息（如拍摄产品成分表）。"
-        "如果工具返回 FEEDING_INQUIRY_NEEDED，请主动询问用户宠物今天是否已经进食。"
-        "如果证据不足，请明确说不确定，并给出下一步建议。"
-    )
     has_web_search = any(r.get("tool_name", "").startswith("mcp.web_search") for r in tool_results)
-    if has_web_search:
-        sys_prompt += _WEB_SEARCH_CITATION_RULES
+    sys_prompt = build_solve_prompt(user_role=user_role, has_web_search=has_web_search, query=query)
     if system_context:
         sys_prompt = f"{system_context}\n\n{sys_prompt}"
 
@@ -601,12 +659,23 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
 
     use_multi_turn = req.model in ("agent-multi-turn", "agent-multiturn", "multi-turn")
     _debug_timing = bool(req.debug_timing)
+    user_role = req.user_role or "pet_owner"
+
+    source_ip = request.client.host if request.client else ""
 
     # 流式处理
     if req.stream:
         async def event_generator():
-            if use_multi_turn:
-                async for chunk in _stream_multi_turn_agent(
+            t0 = time.monotonic()
+            collected_content = []
+            collected_tools = []
+            collected_timing = []
+            collected_rag_hits = 0
+            collected_rag_best_score = 0.0
+            collected_web_search = False
+
+            source = (
+                _stream_multi_turn_agent(
                     request_id=request_id,
                     model=req.model,
                     query=query,
@@ -616,10 +685,9 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     max_tokens=req.max_tokens or 768,
                     allowed_tools=allowed_tools,
                     debug_timing=_debug_timing,
-                ):
-                    yield chunk
-            else:
-                async for chunk in _stream_plan_and_solve(
+                    user_role=user_role,
+                ) if use_multi_turn else
+                _stream_plan_and_solve(
                     request_id=request_id,
                     model=req.model,
                     query=query,
@@ -628,8 +696,60 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     max_tokens=req.max_tokens or 768,
                     allowed_tools=allowed_tools,
                     debug_timing=_debug_timing,
-                ):
-                    yield chunk
+                    user_role=user_role,
+                )
+            )
+
+            async for chunk in source:
+                yield chunk
+                if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
+                    try:
+                        obj = json.loads(chunk[6:])
+                        delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+                        status = obj.get("agent_status")
+                        detail = obj.get("agent_detail") or {}
+                        if status == "streaming" and delta.get("content"):
+                            collected_content.append(delta["content"])
+                        elif status == "tool_complete":
+                            tool_name = detail.get("tool_name", "")
+                            collected_tools.append(tool_name)
+                            if "rag" in tool_name:
+                                collected_rag_hits += detail.get("hits_count", 0)
+                                bs = detail.get("best_score", 0.0) or 0.0
+                                if bs > collected_rag_best_score:
+                                    collected_rag_best_score = bs
+                            if "web_search" in tool_name:
+                                collected_web_search = True
+                        elif status == "timing_summary":
+                            collected_timing = detail.get("timing", [])
+                    except Exception:
+                        pass
+
+            write_trace(
+                trace_id,
+                tool="v1.chat.completions.stream",
+                request={"model": req.model, "query": query, "allowed_tools": allowed_tools},
+                response={
+                    "id": request_id,
+                    "answer_length": sum(len(s) for s in collected_content),
+                    "tools_called": collected_tools,
+                    "timing": collected_timing,
+                },
+            )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            try:
+                await save_qa_record(
+                    question=query, answer="".join(collected_content),
+                    model=req.model, tools_used=collected_tools,
+                    rag_hit_count=collected_rag_hits,
+                    rag_best_score=collected_rag_best_score,
+                    used_web_search=collected_web_search,
+                    response_time_ms=elapsed_ms,
+                    source_ip=source_ip, user_role=user_role,
+                    request_id=request_id,
+                )
+            except Exception:
+                pass
 
         return StreamingResponse(
             event_generator(),
@@ -642,6 +762,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         )
 
     else:
+        t0_non_stream = time.monotonic()
         try:
             _t_start = time.perf_counter()
             _timing: List[Dict[str, Any]] = []
@@ -662,6 +783,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 allowed_tools=allowed_tools,
                 temperature=req.temperature or 0.2,
                 max_tokens=req.max_tokens or 768,
+                user_role=user_role,
             )
             if _debug_timing:
                 _timing.append({"step": "solve_all", "ms": round((time.perf_counter() - t0) * 1000, 1)})
@@ -682,6 +804,27 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             )
 
             write_trace(trace_id, tool="v1.chat.completions", request=req.model_dump(), response=response.model_dump())
+
+            elapsed_ms = int((time.monotonic() - t0_non_stream) * 1000)
+            tools_called = [tr.get("tool_name", "") for tr in (tool_results or []) if isinstance(tr, dict)]
+            rag_hits = sum(
+                len(tr.get("result", {}).get("hits", []))
+                for tr in (tool_results or [])
+                if isinstance(tr, dict) and "rag" in tr.get("tool_name", "") and isinstance(tr.get("result"), dict)
+            )
+            web_used = any("web_search" in tr.get("tool_name", "") for tr in (tool_results or []) if isinstance(tr, dict))
+            try:
+                await save_qa_record(
+                    question=query, answer=answer or "",
+                    model=req.model, tools_used=tools_called,
+                    rag_hit_count=rag_hits, used_web_search=web_used,
+                    response_time_ms=elapsed_ms,
+                    source_ip=source_ip, user_role=user_role,
+                    request_id=request_id,
+                )
+            except Exception:
+                pass
+
             return response
 
         except Exception as e:
@@ -707,14 +850,14 @@ async def list_models():
                 "id": "agent-plan-solve",
                 "object": "model",
                 "created": 1700000000,
-                "owned_by": "pethealthai",
+                "owned_by": "petmind",
                 "description": "Single-turn plan-and-solve agent",
             },
             {
                 "id": "agent-multi-turn",
                 "object": "model",
                 "created": 1700000000,
-                "owned_by": "pethealthai",
+                "owned_by": "petmind",
                 "description": "Multi-turn agent with iterative tool calls",
             },
         ]

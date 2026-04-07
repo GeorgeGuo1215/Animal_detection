@@ -26,6 +26,62 @@ def _normalize_query(query: str) -> str:
     return re.sub(r"\s+", " ", q)
 
 
+_MEDICAL_QUERY_HINTS = (
+    "疾病", "病症", "诊断", "治疗", "病例", "病因", "症状", "临床", "监测", "预警",
+    "感染", "炎症", "腹痛", "腹胀", "便秘", "腹泻", "呕吐", "厌食", "食欲下降",
+    "寄生虫", "梗阻", "肠阻塞", "肠梗阻", "肠套叠", "肠扭转", "肠系膜", "急腹症",
+    "麻醉", "手术", "粪石", "粪团", "抬尾", "努责", "无粪", "排便异常",
+    "disease", "diagnosis", "treatment", "clinical", "symptom", "symptoms",
+    "prevention", "monitoring", "obstruction", "ileus", "constipation",
+    "vomiting", "diarrhea", "abdominal pain", "infection", "parasite",
+)
+
+_MEDICAL_ALIAS_MAP = {
+    "肠梗阻": ("肠阻塞", "肠道梗阻", "intestinal obstruction", "ileus"),
+    "肠阻塞": ("肠梗阻", "肠道梗阻", "intestinal obstruction", "ileus"),
+    "便秘": ("排便困难", "无粪排出", "constipation"),
+    "腹痛": ("腹部疼痛", "abdominal pain"),
+    "腹胀": ("腹围增大", "腹部膨隆", "abdominal distention"),
+    "呕吐": ("反胃", "vomiting"),
+    "腹泻": ("diarrhea",),
+    "寄生虫": ("蛔虫", "parasite", "parasites"),
+    "急腹症": ("腹痛", "腹胀", "急诊", "acute abdomen"),
+}
+
+
+def is_medical_query(query: str) -> bool:
+    q = _normalize_query(query).lower()
+    if not q:
+        return False
+    return any(token.lower() in q for token in _MEDICAL_QUERY_HINTS)
+
+
+def _medical_rewrite_candidates(query: str) -> List[str]:
+    q = _normalize_query(query)
+    if not q or not is_medical_query(q):
+        return []
+
+    out = [
+        q,
+        f"{q} 症状 诊断 病因",
+        f"{q} 临床表现 早期识别",
+        f"{q} 疾病预防 监测",
+        f"{q} symptoms diagnosis causes",
+        f"{q} clinical signs early detection",
+    ]
+    if any(k in q for k in ("前期", "早期", "识别", "异常", "监测")):
+        out.extend([
+            f"{q} 抬尾 努责 无粪排出",
+            f"{q} 食欲下降 腹痛 腹胀",
+            f"{q} constipation abdominal pain agitation",
+        ])
+    for src, aliases in _MEDICAL_ALIAS_MAP.items():
+        if src in q:
+            for alias in aliases:
+                out.append(q.replace(src, alias))
+    return out
+
+
 @dataclass(frozen=True)
 class NoRewrite(QueryRewriter):
     def rewrite(self, query: str) -> List[str]:
@@ -35,35 +91,35 @@ class NoRewrite(QueryRewriter):
 
 _ZH_EN_TOPIC_MAP: dict[str, str] = {
     "食性": "diet feeding",
-    "营养": "nutrition nutritional",
+    "竹子": "bamboo",
+    "栖息地": "habitat",
+    "繁殖": "breeding reproduction",
+    "遗传": "genetics genomics",
+    "保护": "conservation",
+    "行为": "behavior ethology",
+    "解剖": "anatomy morphology",
+    "生理": "physiology",
+    "生态": "ecology",
+    "进化": "evolution evolutionary",
+    "消化": "digestion digestive",
+    "肠道": "intestinal gut",
+    "微生物": "microbiome microbial",
+    "氰化物": "cyanide cyanogenic",
+    "解毒": "detoxification detox",
+    "种群": "population",
+    "基因": "gene genetic",
+    "分类": "taxonomy classification",
+    "圈养": "captive captivity",
+    "野化": "reintroduction rewilding",
     "饲养": "husbandry feeding management",
     "疫苗": "vaccine vaccination",
     "免疫": "immune immunology",
-    "寄生虫": "parasite parasites",
-    "肠道": "intestinal gut",
-    "消化": "digestion digestive",
-    "繁殖": "breeding reproduction",
-    "遗传": "genetics genomics",
-    "基因": "gene genetic",
-    "行为": "behavior ethology",
-    "训练": "training obedience",
-    "手术": "surgery surgical",
-    "麻醉": "anesthesia sedation",
-    "皮肤": "dermatology skin",
-    "骨骼": "orthopedic bone",
-    "肾脏": "renal kidney",
-    "肝脏": "hepatic liver",
-    "心脏": "cardiac heart",
-    "呼吸": "respiratory pulmonary",
-    "泌尿": "urinary urological",
-    "内分泌": "endocrine hormone",
-    "肿瘤": "tumor oncology cancer",
-    "传染病": "infectious disease",
-    "中毒": "poisoning toxicology",
-    "急救": "emergency first aid",
-    "老年": "geriatric senior aging",
-    "幼犬": "puppy neonatal",
-    "幼猫": "kitten neonatal",
+    "寿命": "lifespan longevity",
+    "体重": "body weight",
+    "幼崽": "cub infant",
+    "发情": "estrus mating",
+    "妊娠": "pregnancy gestation",
+    "哺乳": "lactation nursing",
 }
 
 
@@ -77,24 +133,19 @@ def _generate_en_variant(query: str) -> Optional[str]:
             en_parts.append(en)
     if not en_parts:
         return None
-    return "pet veterinary " + " ".join(en_parts[:4])
+    return "giant panda " + " ".join(en_parts[:4])
 
 
 @dataclass(frozen=True)
 class TemplateRewriter(QueryRewriter):
-    """Template-based query expansion with bilingual support."""
-
     templates: tuple[str, ...] = (
         "{q}",
-        "definition of {q}",
-        "what is {q}",
-        "what is the function of {q}",
-        "indications of {q}",
-        "contraindications of {q}",
-        "treatment for {q}",
-        "diagnosis of {q}",
-        "symptoms of {q}",
-        "dose of {q}",
+        "{q} conservation",
+        "{q} breeding",
+        "{q} habitat",
+        "{q} biology",
+        "{q} genetics",
+        "{q} disease prevention",
     )
     max_out: int = 10
 
@@ -102,7 +153,6 @@ class TemplateRewriter(QueryRewriter):
         q = _normalize_query(query)
         if not q:
             return []
-
         out: List[str] = []
         seen: set[str] = set()
 
@@ -112,23 +162,30 @@ class TemplateRewriter(QueryRewriter):
                 out.append(cand)
                 seen.add(cand)
 
+        is_med = is_medical_query(q)
+        budget = max(int(self.max_out), 12) if is_med else int(self.max_out)
+
         _add(q)
 
         en_variant = _generate_en_variant(q)
         if en_variant:
             _add(en_variant)
 
+        if is_med:
+            for cand in _medical_rewrite_candidates(q):
+                _add(cand)
+                if len(out) >= budget:
+                    return out
+
         for t in self.templates:
             _add(t.format(q=q))
-            if len(out) >= int(self.max_out):
+            if len(out) >= budget:
                 break
         return out
 
 
 @dataclass(frozen=True)
 class LLMRewriter(QueryRewriter):
-    """LLM-based query rewriting using OpenAI-compatible API."""
-
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     model: Optional[str] = None
@@ -142,7 +199,6 @@ class LLMRewriter(QueryRewriter):
         model = self.model or _env("OPENAI_MODEL") or _env("DEEPSEEK_MODEL") or "deepseek-chat"
         if not api_key:
             raise RuntimeError("Missing API key for LLMRewriter.")
-
         url = f"{base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         payload = {
@@ -174,7 +230,6 @@ class LLMRewriter(QueryRewriter):
                     return []
             else:
                 return []
-
         qs = obj.get("queries")
         if not isinstance(qs, list):
             return []
@@ -193,26 +248,25 @@ class LLMRewriter(QueryRewriter):
         q = _normalize_query(query)
         if not q:
             return []
-
         system = (
-            "You are a retrieval query rewriting assistant for a veterinary RAG system. "
-            "Generate a few concise English search queries that preserve the original meaning, "
-            "expand key medical terms when useful, and improve recall. "
-            "Return strict JSON only."
+            "You are a retrieval query rewriting assistant for a wildlife knowledge RAG system. "
+            "Generate concise search queries that preserve the original meaning, "
+            "expand key terms when useful, and improve recall. "
+            "The knowledge base already focuses on the relevant domain, so do NOT prepend domain keywords to every query. "
+            "Support both Chinese and English queries. Return strict JSON only."
         )
         user = {
             "task": "rewrite_query_for_retrieval",
             "query": q,
             "requirements": [
                 "Keep the original meaning unchanged.",
-                "Use English only.",
+                "Include both Chinese and English variants when possible.",
                 "Prefer short retrieval-friendly phrasing.",
                 "Include the original query as one candidate.",
                 f"Return at most {int(self.max_out)} queries.",
             ],
             "output_format": {"queries": ["original query", "rewritten query 1", "rewritten query 2"]},
         }
-
         try:
             resp = self._chat_json(
                 [
@@ -224,7 +278,6 @@ class LLMRewriter(QueryRewriter):
             llm_queries = self._extract_queries(content, max_out=int(self.max_out))
         except Exception:
             llm_queries = []
-
         out: List[str] = []
         seen = set()
         for cand in [q] + llm_queries:

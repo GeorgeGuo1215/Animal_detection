@@ -39,9 +39,26 @@ from ..services.plan_and_solve import AsyncPlanAndSolveAgent, _safe_json_loads, 
 from ..tools.tool_registry import get_registry
 
 
+import re as _re
+
 router = APIRouter()
 
 MAX_TOOL_ROUNDS = 5
+
+_TIMELINESS_HINTS = _re.compile(
+    r"(最新|最近|近期|今年|当前|目前|202[3-9]|latest|recent|current)",
+    _re.IGNORECASE,
+)
+_MULTI_TOOL_HINTS = _re.compile(
+    r"(成分|配料|ingredient|热量|calorie|营养|nutrition|运动计划|exercise|meal\s*plan)",
+    _re.IGNORECASE,
+)
+
+
+def _needs_planner(query: str) -> bool:
+    """Return True if the query likely needs multi-tool planning.
+    Simple factual questions can skip the planning LLM call."""
+    return bool(_TIMELINESS_HINTS.search(query) or _MULTI_TOOL_HINTS.search(query))
 
 DEFAULT_ALLOWED_TOOLS = [
     "rag.search",
@@ -549,22 +566,30 @@ async def _stream_plan_and_solve(
         )
         return f"data: {chunk.model_dump_json()}\n\n"
 
-    yield make_chunk(status="planning", detail={"message": "正在制定计划..."})
+    use_planner = _needs_planner(query)
 
-    t0 = time.perf_counter()
-    try:
-        plan = await agent.plan(query=query, allowed_tools=allowed_tools)
-        _lap("plan_llm", t0)
-        yield make_chunk(
-            content="**Plan complete**\n",
-            status="plan_complete",
-            detail={"plan": plan}
-        )
-    except Exception as e:
-        _lap("plan_llm_error", t0)
-        yield make_chunk(content=f"Planning failed: {e}", finish="stop")
-        yield "data: [DONE]\n\n"
-        return
+    if use_planner:
+        yield make_chunk(status="planning", detail={"message": "正在制定计划..."})
+        t0 = time.perf_counter()
+        try:
+            plan = await agent.plan(query=query, allowed_tools=allowed_tools)
+            _lap("plan_llm", t0)
+            yield make_chunk(
+                content="**Plan complete**\n",
+                status="plan_complete",
+                detail={"plan": plan}
+            )
+        except Exception as e:
+            _lap("plan_llm_error", t0)
+            yield make_chunk(content=f"Planning failed: {e}", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+    else:
+        plan = [
+            {"type": "tool", "tool_name": "rag.search", "arguments": {"query": query}, "note": "fast path"},
+            {"type": "final"},
+        ]
+        yield make_chunk(status="plan_complete", detail={"plan": plan, "fast_path": True})
 
     tool_results: List[Dict[str, Any]] = []
     allowed = set(allowed_tools) if allowed_tools else None
@@ -651,9 +676,11 @@ async def _stream_plan_and_solve(
         (hit.get("score", 0.0) for r in _rag_results for hit in r["result"].get("hits", [])),
         default=0.0,
     )
-    _RAG_RELEVANCE_THRESHOLD = 0.55
+    import os as _os
+    _RAG_RELEVANCE_THRESHOLD = float(_os.getenv("RAG_RELEVANCE_THRESHOLD", "0.55"))
+    _WEB_FALLBACK_MIN_HITS = int(_os.getenv("RAG_WEB_FALLBACK_MIN_HITS", "2"))
     already_has_web = any(r.get("tool_name") == _WEB_TOOL for r in tool_results)
-    _need_web = (rag_hits_total < 2) or (rag_hits_total > 0 and rag_best_score < _RAG_RELEVANCE_THRESHOLD)
+    _need_web = (rag_hits_total < _WEB_FALLBACK_MIN_HITS) or (rag_hits_total > 0 and rag_best_score < _RAG_RELEVANCE_THRESHOLD)
     if _need_web and not already_has_web and _WEB_TOOL in (allowed_tools or []):
         _fallback_reason = (
             f"RAG only returned {rag_hits_total} hits"

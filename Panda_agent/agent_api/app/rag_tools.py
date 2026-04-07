@@ -20,7 +20,13 @@ from RAG.simple_rag.reranker import CrossEncoderReranker
 from RAG.simple_rag.vector_store import NumpyVectorStore
 
 
-_RE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9\\-]{2,}")
+_RE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9\-]{2,}")
+_CJK_RANGES = "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
+_RE_CJK_CHAR = re.compile(f"[{_CJK_RANGES}]")
+_EN_STOP = {
+    "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "as",
+    "is", "are", "was", "were", "be", "by", "that", "this", "it", "from", "at",
+}
 
 _MEDICAL_TEXT_HINTS = (
     "疾病", "病症", "诊断", "治疗", "病例", "病因", "症状", "临床", "监测",
@@ -72,11 +78,22 @@ def _prioritize_medical_hits(hits: List[dict], query: str) -> List[dict]:
     return filtered
 
 
+def _tokenize_for_overlap(text: str) -> list[str]:
+    s = (text or "").lower()
+    tokens = [t for t in _RE_WORD.findall(s) if t not in _EN_STOP]
+    cjk_chars = _RE_CJK_CHAR.findall(s)
+    for i in range(len(cjk_chars) - 1):
+        tokens.append(cjk_chars[i] + cjk_chars[i + 1])
+    if len(cjk_chars) == 1:
+        tokens.append(cjk_chars[0])
+    return tokens
+
+
 def overlap_score(query: str, ctx: str) -> float:
-    tq = set(t.lower() for t in _RE_WORD.findall(query or ""))
+    tq = set(_tokenize_for_overlap(query))
     if not tq:
         return 0.0
-    tc = set(t.lower() for t in _RE_WORD.findall(ctx or ""))
+    tc = set(_tokenize_for_overlap(ctx))
     if not tc:
         return 0.0
     return len(tq & tc) / float(len(tq))
@@ -281,9 +298,17 @@ def rag_search_tool(
              "text": h.meta.get("text"), "chunk_id": h.meta.get("chunk_id")}
             for h in mr.retrieve(query, top_k=retrieve_k)
         ]
-    hits = _prioritize_medical_hits(hits, query)
+    _rerank_skip_thr = float(os.getenv("RAG_RERANK_SKIP_THRESHOLD", "0.85"))
+    dense_top_score = hits[0].get("score", 0.0) if hits else 0.0
+    should_rerank = rerank and hits and dense_top_score < _rerank_skip_thr
 
-    if rerank and hits:
+    if should_rerank:
+        # Pre-filter: remove bottom 25% of candidates to reduce reranker workload
+        if len(hits) > 4:
+            cutoff = max(int(len(hits) * 0.75), int(top_k))
+            hits_sorted = sorted(hits, key=lambda h: h.get("score", 0), reverse=True)
+            hits = hits_sorted[:cutoff]
+
         passages = [(h.get("text") or "").strip() for h in hits]
         rr = _get_reranker(rerank_model, device)
         order = rr.rerank(query=query, passages=passages, top_k=int(top_k), batch_size=int(rerank_batch_size))
@@ -304,7 +329,8 @@ def rag_search_tool(
         if topn > 0 and len(hits) > topn:
             hits = hits[:topn]
 
-    hits = _prioritize_medical_hits(hits, query)
+    if not rerank:
+        hits = _prioritize_medical_hits(hits, query)
     contexts: List[dict] = []
     if int(expand_neighbors) > 0 and hits:
         store = _get_store(cfg.index_dir)

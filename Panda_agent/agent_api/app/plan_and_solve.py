@@ -146,7 +146,7 @@ class PlanAndSolveAgent:
         top_k = int(args.get("top_k") or 5)
         args.setdefault("rerank_candidates", max(10, top_k * 2))
         args.setdefault("rerank_batch_size", 32)
-        args.setdefault("rerank_filter_overlap", 0.15)
+        args.setdefault("rerank_filter_overlap", float(os.getenv("RAG_OVERLAP_THRESHOLD", "0.15")))
         return args
 
     def plan(self, *, query: str, allowed_tools: Optional[List[str]] = None) -> List[Dict[str, Any]]:

@@ -279,7 +279,17 @@ def rag_search_tool(
             for h in mr.retrieve(query, top_k=retrieve_k)
         ]
 
-    if rerank and hits:
+    _rerank_skip_thr = float(os.getenv("RAG_RERANK_SKIP_THRESHOLD", "0.85"))
+    dense_top_score = hits[0].get("score", 0.0) if hits else 0.0
+    should_rerank = rerank and hits and dense_top_score < _rerank_skip_thr
+
+    if should_rerank:
+        # Pre-filter: remove bottom 25% of candidates to reduce reranker workload
+        if len(hits) > 4:
+            cutoff = max(int(len(hits) * 0.75), int(top_k))
+            hits_sorted = sorted(hits, key=lambda h: h.get("score", 0), reverse=True)
+            hits = hits_sorted[:cutoff]
+
         passages = [(h.get("text") or "").strip() for h in hits]
         rr = _get_reranker(resolved_rr, device)
         order = rr.rerank(query=query, passages=passages, top_k=int(top_k), batch_size=int(rerank_batch_size))

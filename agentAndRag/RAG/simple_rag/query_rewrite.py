@@ -80,28 +80,52 @@ def _generate_en_variant(query: str) -> Optional[str]:
     return "pet veterinary " + " ".join(en_parts[:4])
 
 
+_RE_CJK_CHAR_QR = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
+
+_ZH_TEMPLATES: tuple[str, ...] = (
+    "{q}",
+    "{q} 是什么",
+    "{q} 的定义",
+    "{q} 的症状",
+    "{q} 的治疗方法",
+    "{q} 的诊断",
+    "{q} 的禁忌症",
+    "{q} 的用药剂量",
+)
+
+_EN_TEMPLATES: tuple[str, ...] = (
+    "{q}",
+    "definition of {q}",
+    "what is {q}",
+    "what is the function of {q}",
+    "indications of {q}",
+    "contraindications of {q}",
+    "treatment for {q}",
+    "diagnosis of {q}",
+    "symptoms of {q}",
+    "dose of {q}",
+)
+
+
+def _is_mainly_chinese(query: str) -> bool:
+    chars = query.replace(" ", "")
+    if not chars:
+        return False
+    return len(_RE_CJK_CHAR_QR.findall(query)) / len(chars) > 0.3
+
+
 @dataclass(frozen=True)
 class TemplateRewriter(QueryRewriter):
     """Template-based query expansion with bilingual support."""
 
-    templates: tuple[str, ...] = (
-        "{q}",
-        "definition of {q}",
-        "what is {q}",
-        "what is the function of {q}",
-        "indications of {q}",
-        "contraindications of {q}",
-        "treatment for {q}",
-        "diagnosis of {q}",
-        "symptoms of {q}",
-        "dose of {q}",
-    )
     max_out: int = 10
 
     def rewrite(self, query: str) -> List[str]:
         q = _normalize_query(query)
         if not q:
             return []
+
+        templates = _ZH_TEMPLATES if _is_mainly_chinese(q) else _EN_TEMPLATES
 
         out: List[str] = []
         seen: set[str] = set()
@@ -118,7 +142,7 @@ class TemplateRewriter(QueryRewriter):
         if en_variant:
             _add(en_variant)
 
-        for t in self.templates:
+        for t in templates:
             _add(t.format(q=q))
             if len(out) >= int(self.max_out):
                 break

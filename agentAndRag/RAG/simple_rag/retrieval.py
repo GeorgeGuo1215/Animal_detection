@@ -54,12 +54,20 @@ _RE_CJK_CHAR = re.compile(f"[{_CJK_RANGES}]")
 _RE_EN_WORD = re.compile(r"[a-z][a-z0-9\-]{2,}")
 
 
+try:
+    import jieba as _jieba
+    _HAS_JIEBA = True
+except ImportError:
+    _jieba = None  # type: ignore[assignment]
+    _HAS_JIEBA = False
+
+
 def _tokenize(text: str) -> List[str]:
     """Tokenize mixed Chinese-English text for BM25.
 
     English: standard lowercase words (3+ chars), stop-words removed.
-    Chinese: overlapping bigrams (2-char sliding window) — gives decent
-    term-matching without requiring a segmentation library.
+    Chinese: jieba cut_for_search (full words + sub-words) when available,
+    falls back to overlapping bigrams otherwise.
     """
     s = (text or "").lower()
     tokens: List[str] = []
@@ -67,12 +75,18 @@ def _tokenize(text: str) -> List[str]:
     en_toks = _RE_EN_WORD.findall(s)
     tokens.extend(t for t in en_toks if t not in EN_STOP)
 
-    cjk_chars = _RE_CJK_CHAR.findall(s)
-    if len(cjk_chars) >= 2:
-        for i in range(len(cjk_chars) - 1):
-            tokens.append(cjk_chars[i] + cjk_chars[i + 1])
-    elif len(cjk_chars) == 1:
-        tokens.append(cjk_chars[0])
+    if _HAS_JIEBA:
+        for w in _jieba.cut_for_search(s):
+            w = w.strip()
+            if len(w) >= 2 and _RE_CJK_CHAR.search(w):
+                tokens.append(w)
+    else:
+        cjk_chars = _RE_CJK_CHAR.findall(s)
+        if len(cjk_chars) >= 2:
+            for i in range(len(cjk_chars) - 1):
+                tokens.append(cjk_chars[i] + cjk_chars[i + 1])
+        elif len(cjk_chars) == 1:
+            tokens.append(cjk_chars[0])
 
     return tokens
 

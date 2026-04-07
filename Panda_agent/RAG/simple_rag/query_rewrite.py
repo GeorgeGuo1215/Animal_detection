@@ -136,23 +136,49 @@ def _generate_en_variant(query: str) -> Optional[str]:
     return "giant panda " + " ".join(en_parts[:4])
 
 
+_RE_CJK_CHAR_QR = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
+
+_ZH_PANDA_TEMPLATES: tuple[str, ...] = (
+    "{q}",
+    "{q} 是什么",
+    "{q} 的定义",
+    "{q} 保护",
+    "{q} 繁殖",
+    "{q} 栖息地",
+    "{q} 生物学特征",
+    "{q} 遗传多样性",
+    "{q} 疾病预防",
+)
+
+_EN_PANDA_TEMPLATES: tuple[str, ...] = (
+    "{q}",
+    "{q} conservation",
+    "{q} breeding",
+    "{q} habitat",
+    "{q} biology",
+    "{q} genetics",
+    "{q} disease prevention",
+)
+
+
+def _is_mainly_chinese(query: str) -> bool:
+    chars = query.replace(" ", "")
+    if not chars:
+        return False
+    return len(_RE_CJK_CHAR_QR.findall(query)) / len(chars) > 0.3
+
+
 @dataclass(frozen=True)
 class TemplateRewriter(QueryRewriter):
-    templates: tuple[str, ...] = (
-        "{q}",
-        "{q} conservation",
-        "{q} breeding",
-        "{q} habitat",
-        "{q} biology",
-        "{q} genetics",
-        "{q} disease prevention",
-    )
     max_out: int = 10
 
     def rewrite(self, query: str) -> List[str]:
         q = _normalize_query(query)
         if not q:
             return []
+
+        templates = _ZH_PANDA_TEMPLATES if _is_mainly_chinese(q) else _EN_PANDA_TEMPLATES
+
         out: List[str] = []
         seen: set[str] = set()
 
@@ -177,7 +203,7 @@ class TemplateRewriter(QueryRewriter):
                 if len(out) >= budget:
                     return out
 
-        for t in self.templates:
+        for t in templates:
             _add(t.format(q=q))
             if len(out) >= budget:
                 break

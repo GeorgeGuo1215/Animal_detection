@@ -18,14 +18,31 @@ from RAG.simple_rag.reranker import CrossEncoderReranker
 from RAG.simple_rag.vector_store import NumpyVectorStore
 
 
-_RE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9\\-]{2,}")
+_RE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9\-]{2,}")
+_CJK_RANGES = "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
+_RE_CJK_CHAR = re.compile(f"[{_CJK_RANGES}]")
+_EN_STOP = {
+    "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "as",
+    "is", "are", "was", "were", "be", "by", "that", "this", "it", "from", "at",
+}
+
+
+def _tokenize_for_overlap(text: str) -> list[str]:
+    s = (text or "").lower()
+    tokens = [t for t in _RE_WORD.findall(s) if t not in _EN_STOP]
+    cjk_chars = _RE_CJK_CHAR.findall(s)
+    for i in range(len(cjk_chars) - 1):
+        tokens.append(cjk_chars[i] + cjk_chars[i + 1])
+    if len(cjk_chars) == 1:
+        tokens.append(cjk_chars[0])
+    return tokens
 
 
 def overlap_score(query: str, ctx: str) -> float:
-    tq = set(t.lower() for t in _RE_WORD.findall(query or ""))
+    tq = set(_tokenize_for_overlap(query))
     if not tq:
         return 0.0
-    tc = set(t.lower() for t in _RE_WORD.findall(ctx or ""))
+    tc = set(_tokenize_for_overlap(ctx))
     if not tc:
         return 0.0
     return len(tq & tc) / float(len(tq))

@@ -430,9 +430,11 @@ async def _stream_plan_and_solve(
     # 2. Hits exist but best rerank score is below relevance threshold —
     #    meaning the knowledge base returned content but none of it actually
     #    addresses the query (e.g. asking about cyanide detox gets bamboo-eating hits)
-    _RAG_RELEVANCE_THRESHOLD = 0.55
+    import os as _os
+    _RAG_RELEVANCE_THRESHOLD = float(_os.getenv("RAG_RELEVANCE_THRESHOLD", "0.55"))
+    _WEB_FALLBACK_MIN_HITS = int(_os.getenv("RAG_WEB_FALLBACK_MIN_HITS", "2"))
     already_has_web = any(r.get("tool_name") == _WEB_TOOL for r in tool_results)
-    _need_web = (rag_hits_total < 2) or (rag_hits_total > 0 and rag_best_score < _RAG_RELEVANCE_THRESHOLD)
+    _need_web = (rag_hits_total < _WEB_FALLBACK_MIN_HITS) or (rag_hits_total > 0 and rag_best_score < _RAG_RELEVANCE_THRESHOLD)
     if _need_web and not already_has_web and _WEB_TOOL in (allowed_tools or []):
         _fallback_reason = (
             f"RAG only returned {rag_hits_total} hits"

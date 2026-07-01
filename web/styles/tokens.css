@@ -1,0 +1,141 @@
+/* ========================================================================
+   PetMind Design Tokens — Minimal Monochrome (Apple/Linear style)
+   纯黑白主色调 + 中性灰阶层级 + 系统字体 + 平滑动画曲线
+   ======================================================================== */
+
+:root {
+  /* 颜色：主体 */
+  --color-bg:           #FFFFFF;
+  --color-bg-elev:      #F5F5F7;
+  --color-surface:      #FFFFFF;
+  --color-surface-2:    #FAFAFA;
+
+  /* 颜色：文字 */
+  --color-text:         #1D1D1F;
+  --color-text-muted:   #6E6E73;
+  --color-text-faint:   #86868B;
+  --color-text-onfill:  #FFFFFF;
+
+  /* 颜色：边线 */
+  --color-border:       #E5E5EA;
+  --color-border-mid:   #D2D2D7;
+  --color-border-strong:#1D1D1F;
+
+  /* 颜色：状态（保持单色但允许微弱色域，便于无障碍可读）*/
+  --color-accent:       #000000;
+  --color-success:      #1D1D1F;
+  --color-warning:      #1D1D1F;
+  --color-danger:       #1D1D1F;
+  --color-link:         #1D1D1F;
+
+  /* 半透明覆盖 */
+  --color-overlay:      rgba(0, 0, 0, 0.42);
+  --color-glass:        rgba(255, 255, 255, 0.78);
+
+  /* 圆角 */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* 阴影（极轻） */
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.04);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.08);
+  --shadow-focus: 0 0 0 3px rgba(0, 0, 0, 0.08);
+
+  /* 字体 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+               "Inter", "PingFang SC", "Microsoft YaHei", "Helvetica Neue",
+               system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo,
+               Consolas, monospace;
+
+  /* 字号 */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --fs-3xl: 28px;
+  --fs-4xl: 36px;
+  --fs-display: 48px;
+
+  /* 字重 */
+  --fw-thin: 300;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* 间距（4px 基础栅格） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 缓动曲线 */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in:  cubic-bezier(0.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* 时长 */
+  --t-instant: 80ms;
+  --t-fast: 120ms;
+  --t-base: 220ms;
+  --t-slow: 360ms;
+  --t-slower: 520ms;
+
+  /* 层级 */
+  --z-nav: 100;
+  --z-sticky: 200;
+  --z-overlay: 800;
+  --z-modal: 900;
+  --z-toast: 1000;
+
+  /* 布局 */
+  --container-max: 1440px;
+  --header-h: 92px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg:           #000000;
+    --color-bg-elev:      #0A0A0A;
+    --color-surface:      #111113;
+    --color-surface-2:    #161618;
+
+    --color-text:         #F5F5F7;
+    --color-text-muted:   #A1A1A6;
+    --color-text-faint:   #6E6E73;
+    --color-text-onfill:  #000000;
+
+    --color-border:       #2A2A2C;
+    --color-border-mid:   #3A3A3C;
+    --color-border-strong:#F5F5F7;
+
+    --color-accent:       #FFFFFF;
+    --color-success:      #F5F5F7;
+    --color-warning:      #F5F5F7;
+    --color-danger:       #F5F5F7;
+    --color-link:         #F5F5F7;
+
+    --color-overlay:      rgba(0, 0, 0, 0.7);
+    --color-glass:        rgba(20, 20, 22, 0.78);
+
+    --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.04);
+    --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.55);
+    --shadow-focus: 0 0 0 3px rgba(255, 255, 255, 0.12);
+  }
+}

@@ -1,0 +1,154 @@
+/* ========================================================================
+   Base — Reset、排版、滚动、无障碍焦点、关键动画 keyframes
+   ======================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-bg-elev);
+  letter-spacing: -0.005em;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--color-text);
+}
+h1 { font-size: var(--fs-3xl); letter-spacing: -0.025em; }
+h2 { font-size: var(--fs-2xl); }
+h3 { font-size: var(--fs-xl); }
+h4 { font-size: var(--fs-lg); font-weight: var(--fw-medium); }
+h5 { font-size: var(--fs-md); font-weight: var(--fw-medium); }
+h6 { font-size: var(--fs-sm); font-weight: var(--fw-medium); text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); }
+
+p { margin: 0 0 var(--space-3); }
+p:last-child { margin-bottom: 0; }
+
+a {
+  color: var(--color-link);
+  text-decoration: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+a:hover { opacity: 0.7; }
+
+code, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-surface-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--color-border);
+}
+pre { padding: var(--space-3); overflow-x: auto; }
+pre code { background: transparent; border: none; padding: 0; }
+
+ul, ol { margin: 0 0 var(--space-3); padding-left: var(--space-6); }
+
+img, video, canvas { max-width: 100%; display: block; }
+
+/* 滚动条（Webkit） */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-mid);
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-faint); }
+
+/* 文字选区 */
+::selection {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+/* 焦点 */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--radius-sm);
+}
+
+/* 工具类 */
+.text-muted { color: var(--color-text-muted) !important; }
+.text-faint { color: var(--color-text-faint) !important; }
+.text-strong { color: var(--color-text); font-weight: var(--fw-semibold); }
+.small { font-size: var(--fs-sm); }
+.tiny { font-size: var(--fs-xs); }
+.center { text-align: center; }
+.right { text-align: right; }
+.hidden, [hidden] { display: none !important; }
+.no-select { user-select: none; -webkit-user-select: none; }
+
+/* 关键动画 keyframes */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes fadeDown {
+  from { opacity: 0; transform: translate3d(0, -8px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(0.92); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes ringDraw {
+  from { stroke-dashoffset: 565; }
+  to   { stroke-dashoffset: var(--ring-target, 0); }
+}
+
+/* 通用入场类 */
+.animate-fade-up { animation: fadeUp var(--t-base) var(--ease-out) both; }
+.animate-fade { animation: fadeIn var(--t-base) var(--ease-out) both; }
+.animate-scale { animation: scaleIn var(--t-slow) var(--ease-out) both; }
+.delay-1 { animation-delay: 60ms; }
+.delay-2 { animation-delay: 120ms; }
+.delay-3 { animation-delay: 180ms; }
+.delay-4 { animation-delay: 240ms; }
+
+/* 减少动画偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

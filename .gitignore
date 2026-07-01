@@ -32,3 +32,23 @@ ENV/
 # Local configuration
 *.local
 .env
+
+# Test / tooling caches
+.pytest_cache/
+
+# --- agentAndRag: never commit large artifacts, runtime state or secrets ---
+# RAG index + embeddings (hundreds of MB) and downloaded model weights
+agentAndRag/RAG/data/
+agentAndRag/models/
+agentAndRag/1.1.0
+# Runtime logs, traces and local SQLite QA store
+agentAndRag/agent_api_logs/
+*.db
+# API keys loaded by the auth middleware (auto-generated on first run)
+**/keys.txt
+# Live/eval test reports
+agentAndRag/agent_api/tests/**/reports/
+
+# Vendored tooling clone (not part of this project)
+git-filter-repo/
+git-filter-repo

@@ -1,0 +1,220 @@
+/* ========================================================================
+   Layout — Header / 导航 / 双区 Shell / Workspace 切换
+   ======================================================================== */
+
+.container {
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: var(--space-6);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* === Header === */
+.demo-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  animation: fadeUp var(--t-base) var(--ease-out);
+}
+.demo-header-brand h1 {
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+.demo-header-brand .subtitle {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+}
+
+/* === 顶部 Pill 导航 === */
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  width: fit-content;
+  max-width: 100%;
+}
+.nav-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 14px;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--color-text-muted);
+  border-radius: var(--radius-pill);
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+  cursor: pointer;
+}
+.nav-pill:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  opacity: 1;
+}
+.nav-pill.is-active {
+  background: var(--color-text);
+  color: var(--color-text-onfill);
+}
+
+/* === 双区 Shell === */
+.demo-shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-5);
+}
+
+@media (min-width: 1100px) {
+  .demo-shell {
+    grid-template-columns: minmax(440px, 0.95fr) minmax(0, 1.4fr);
+  }
+}
+
+/* === BLE 常驻面板 === */
+.demo-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  animation: fadeUp var(--t-base) var(--ease-out) 60ms both;
+}
+.demo-panel h2 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  margin: 0 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.demo-panel .section-desc,
+.section-desc {
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+  margin: 0 0 var(--space-3);
+  line-height: 1.6;
+}
+
+/* === Workspace 区 === */
+.demo-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0; /* 防止溢出导致 grid blowout */
+}
+.workspace-toolbar {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: 4px 6px;
+}
+.workspace-toolbar-kicker {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-faint);
+}
+.workspace-current {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+}
+.workspace-pages {
+  position: relative;
+  min-height: 320px;
+}
+
+/* 工作区页：默认隐藏，激活时显示 */
+.workspace-page {
+  display: none;
+  animation: fadeUp var(--t-slow) var(--ease-out);
+}
+.workspace-page.is-active {
+  display: block;
+}
+
+/* 空态 */
+.workspace-page--empty .workspace-empty-inner {
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border-mid);
+  border-radius: var(--radius-xl);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+.workspace-empty-icon {
+  font-size: 36px;
+  color: var(--color-text-faint);
+  display: block;
+}
+.workspace-empty-title {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  margin: 0;
+}
+.workspace-empty-desc {
+  color: var(--color-text-muted);
+  font-size: var(--fs-md);
+  max-width: 420px;
+  margin: 0;
+}
+.workspace-empty-desc strong { color: var(--color-text); font-weight: var(--fw-medium); }
+
+/* 上传/分析等 section 标题 */
+.upload-section,
+.status-section,
+.results-section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.upload-section h2,
+.status-section h2,
+.results-section h2 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 锚点滚动平滑 */
+html { scroll-behavior: smooth; }
+.section-anchor { scroll-margin-top: var(--space-6); }
+
+/* 响应式 */
+@media (max-width: 640px) {
+  .container { padding: var(--space-3); gap: var(--space-3); }
+  .demo-header-brand h1 { font-size: var(--fs-2xl); }
+  .demo-panel,
+  .upload-section,
+  .status-section,
+  .results-section { padding: var(--space-4); }
+  .nav-pill { padding: 6px 12px; }
+}

@@ -7,27 +7,48 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>毫米波雷达数据处理系统 - Web版</title>
-    <link rel="stylesheet" href="style.css?v=20260302-2">
+    <title>PetMind · 毫米波生理感知平台</title>
+
+    <!-- 新版样式：tokens + base + components + layout + workspaces -->
+    <link rel="stylesheet" href="styles/tokens.css">
+    <link rel="stylesheet" href="styles/base.css">
+    <link rel="stylesheet" href="styles/components.css">
+    <link rel="stylesheet" href="styles/layout.css">
+    <link rel="stylesheet" href="styles/workspaces.css">
+
+    <!-- 第三方依赖（Chart.js / Three.js / marked / DOMPurify 通过 CDN，不走 ESM） -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="fft.js?v=20260302-2"></script>
-    <script src="bluetooth.js?v=20260302-3"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>🎯 毫米波雷达数据处理系统</h1>
-            <p class="subtitle">基于Web的生理信号分析工具</p>
+        <header class="demo-header">
+            <div class="demo-header-brand">
+                <h1>毫米波生理感知平台</h1>
+                <p class="subtitle">PetMind · 雷达 / IMU · Agent 一体化演示</p>
+            </div>
+            <nav class="page-nav page-nav--demo" aria-label="功能导航">
+                <a href="#panel-ble" data-nav="ble" class="nav-pill">设备连接</a>
+                <a href="#ws-integration" data-workspace="integration" class="nav-pill">n8n 入站</a>
+                <a href="#ws-chat" data-workspace="chat" class="nav-pill">健康对话</a>
+                <a href="#ws-attitude" data-workspace="attitude" class="nav-pill">IMU 姿态</a>
+                <a href="#ws-resting" data-workspace="resting" class="nav-pill">静息监测</a>
+                <a href="#ws-activity" data-workspace="activity" class="nav-pill">活动与步数</a>
+                <a href="#ws-sleep" data-workspace="sleep" class="nav-pill">睡眠监测</a>
+                <a href="#ws-files" data-workspace="files" class="nav-pill">文件上传</a>
+                <a href="#ws-analytics" data-workspace="analytics" class="nav-pill">数据分析</a>
+                <a href="#ws-ble-charts" data-workspace="ble-charts" class="nav-pill">蓝牙图表</a>
+            </nav>
         </header>
 
-        <div class="main-content">
-            <!-- 蓝牙实时数据区域 -->
-            <section class="upload-section">
+        <div class="main-content demo-shell">
+            <section class="demo-panel demo-panel--ble upload-section section-anchor" id="panel-ble">
                 <h2>📶 蓝牙实时数据接口</h2>
 
                 <!-- 保存的设备信息 -->
-                <div id="bleSavedDevice" style="display:none; background: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
-                </div>
+                <div id="bleSavedDevice" class="ble-saved-device" style="display:none;"></div>
 
                 <div class="file-actions">
                     <button class="btn btn-primary" id="bleConnectBtn" onclick="bleConnect()">连接蓝牙</button>
@@ -42,18 +63,69 @@
                     <button class="btn btn-warning" onclick="startSimulationTest()" style="margin-left:10px;">模拟测试</button>
                 </div>
 
-                <div class="ble-upload-config">
-                    <label for="bleUploadUrl">上报接口:</label>
-                    <input id="bleUploadUrl" type="text" placeholder="http://127.0.0.1:9001/ingest" class="input-url">
-                    <label for="bleAnimalId">animal_id:</label>
-                    <input id="bleAnimalId" type="text" placeholder="dog_001" class="input-sm">
-                    <label for="bleDeviceId">device_id:</label>
-                    <input id="bleDeviceId" type="text" placeholder="ble_device_01" class="input-md">
-                    <label for="bleUploadInterval">间隔(s):</label>
-                    <input id="bleUploadInterval" type="number" min="5" value="10" class="input-xs">
-                    <button class="btn btn-success" id="bleStartUploadBtn" onclick="bleStartUpload()" style="display:none;">开始上传</button>
-                    <button class="btn btn-danger" id="bleStopUploadBtn" onclick="bleStopUpload()" style="display:none;">停止上传</button>
-                    <span id="bleUploadStatus">未上传</span>
+                <div class="ble-config-stack">
+                    <div class="ble-upload-config">
+                        <label for="bleUploadUrl">上报接口:</label>
+                        <input id="bleUploadUrl" type="text" placeholder="http://127.0.0.1:8000/integration/ingest" class="input-url">
+                        <label for="bleAnimalId">animal_id:</label>
+                        <input id="bleAnimalId" type="text" placeholder="dog_001" class="input-sm" autocomplete="off">
+                        <label for="bleDeviceId">device_id:</label>
+                        <input id="bleDeviceId" type="text" placeholder="ble_device_01" class="input-md">
+                        <label for="bleUploadInterval">间隔(s):</label>
+                        <input id="bleUploadInterval" type="number" min="5" value="10" class="input-xs">
+                        <button class="btn btn-success" id="bleStartUploadBtn" onclick="bleStartUpload()" style="display:none;">开始上传</button>
+                        <button class="btn btn-danger" id="bleStopUploadBtn" onclick="bleStopUpload()" style="display:none;">停止上传</button>
+                        <span id="bleUploadStatus">未上传</span>
+                    </div>
+
+                    <div class="ble-agent-strip">
+                        <div class="ble-agent-strip-main">
+                            <label for="agentEndpoint">PetMind Agent 基址</label>
+                            <input type="text" id="agentEndpoint" class="input-url ble-agent-endpoint-input" placeholder="http://127.0.0.1:8000" autocomplete="off" title="PetMind 根 URL（无路径）。用于 /health 探活、/v1/chat/completions 对话、/agent/plan_and_solve 分析等">
+                        </div>
+                        <p class="ble-agent-hint"><strong>作用：</strong>统一指定本机 PetMind Agent 的根地址（默认 <code>http://127.0.0.1:8000</code>）。「重新连接」会请求 <code>{基址}/health</code>；对话请求 <code>{基址}/v1/chat/completions</code>；JSON 健康分析请求 <code>{基址}/agent/plan_and_solve</code>。与上方 <strong>animal_id</strong>（如 <code>dog_001</code>）一致时，便于按动物维度走 <code>sql.search</code>。</p>
+                    </div>
+
+                    <details id="bleAlgoDetails" class="ble-algo-details">
+                        <summary class="ble-algo-summary">算法参数 <span class="ble-algo-summary-sub">采样率 · 心率/呼吸范围 · 滤波与平滑</span></summary>
+                        <div class="ble-algo-inner">
+                            <div class="setting-group">
+                                <label for="samplingRate">采样率 (Hz)</label>
+                                <input type="number" id="samplingRate" value="50" min="1" max="1000">
+                            </div>
+                            <div class="setting-group">
+                                <label>心率范围 (bpm)</label>
+                                <div class="setting-inline">
+                                    <input type="number" id="heartRateMin" value="48" min="30" max="100" placeholder="最小值" aria-label="心率最小值">
+                                    <span class="setting-sep">—</span>
+                                    <input type="number" id="heartRateMax" value="180" min="100" max="300" placeholder="最大值" aria-label="心率最大值">
+                                </div>
+                            </div>
+                            <div class="setting-group">
+                                <label>呼吸频率范围 (bpm)</label>
+                                <div class="setting-inline">
+                                    <input type="number" id="respRateMin" value="6" min="3" max="15" placeholder="最小值">
+                                    <span class="setting-sep">—</span>
+                                    <input type="number" id="respRateMax" value="30" min="15" max="60" placeholder="最大值">
+                                </div>
+                            </div>
+                            <div class="setting-group">
+                                <label for="filterWindow">滤波窗口大小</label>
+                                <input type="number" id="filterWindow" value="10" min="3" max="50">
+                            </div>
+                            <div class="setting-group">
+                                <label for="heartRateSmoothing">心率平滑长度</label>
+                                <input type="number" id="heartRateSmoothing" value="30" min="5" max="60" title="保留最近N次心率结果取平均，值越大越平滑但响应越慢">
+                            </div>
+                            <div class="setting-group">
+                                <label for="heartRateDelta">心率变化阈值 (bpm)</label>
+                                <input type="number" id="heartRateDelta" value="10" min="5" max="30" title="限制心率每次最大变化幅度，防止突变">
+                            </div>
+                            <div class="ble-algo-actions">
+                                <button type="button" class="btn btn-primary" onclick="applySettings()">应用设置</button>
+                            </div>
+                        </div>
+                    </details>
                 </div>
                 
                 <!-- 连接状态和实时数据显示 -->
@@ -112,8 +184,47 @@
                 </div>
             </section>
 
+            <aside class="demo-workspace" aria-label="功能模块">
+            <div class="workspace-toolbar">
+                <span class="workspace-toolbar-kicker">功能模块</span>
+                <span class="workspace-current" id="workspaceCurrentLabel">请选择导航中的功能</span>
+            </div>
+            <div class="workspace-pages" id="workspacePages">
+            <div id="ws-empty" class="workspace-page workspace-page--empty is-active">
+                <div class="workspace-empty-inner">
+                    <span class="workspace-empty-icon" aria-hidden="true">◇</span>
+                    <h2 class="workspace-empty-title">选择功能模块</h2>
+                    <p class="workspace-empty-desc">请使用顶部导航切换业务功能。上方卡片为常驻的<strong>设备连接、上报与 Agent 基址</strong>配置。</p>
+                </div>
+            </div>
+
+            <div id="ws-integration" class="workspace-page">
+            <!-- n8n 入站：与 PetMind Agent /integration/ingest 对齐（免 Bearer） -->
+            <section class="upload-section section-anchor" id="sec-integration">
+                <h2>🔗 n8n 模拟入站（Agent 8000）</h2>
+                <p class="section-desc">
+                    将下方 JSON 发到 <span class="mono">POST /integration/ingest</span>，经服务端转发至 n8n 写入 MySQL；与蓝牙周期上报同一数据形态。
+                    PetMind 对话接口仍为 <span class="mono">http://127.0.0.1:8000</span> 的 <span class="mono">/v1/chat/completions</span> 等。
+                </p>
+                <div class="integration-mock-panel">
+                    <div class="row-tools">
+                        <label for="integrationIngestBase">Integration Base URL：</label>
+                        <input id="integrationIngestBase" type="text" class="input-url" style="min-width:280px" value="http://127.0.0.1:8000/integration" />
+                        <button type="button" class="btn btn-secondary" onclick="integrationMockLoadFixture()">加载模板 JSON</button>
+                        <button type="button" class="btn btn-success" onclick="integrationMockSend()">发送到 /ingest</button>
+                    </div>
+                    <p class="text-muted small" id="integrationMockStatus"></p>
+                    <label>请求体（可编辑，发送时会自动给 event_id 加时间后缀）：</label>
+                    <textarea id="integrationMockPayload" rows="12" class="mono" style="width:100%;font-size:12px;"></textarea>
+                    <label style="margin-top:8px;display:block;">响应：</label>
+                    <pre id="integrationMockResult" class="integration-mock-result mono"></pre>
+                </div>
+            </section>
+            </div>
+
+            <div id="ws-attitude" class="workspace-page">
             <!-- 姿态解算模块 -->
-            <section class="upload-section attitude-section" id="attitudeSection">
+            <section class="upload-section attitude-section" id="sec-attitude">
                 <h2>🎯 IMU 姿态解算</h2>
                 <p class="section-desc">
                     基于加速度计和陀螺仪数据进行实时姿态解算,支持 Madgwick 和互补滤波器算法
@@ -286,9 +397,11 @@
                     </div>
                 </div>
             </section>
+            </div>
 
+            <div id="ws-resting" class="workspace-page">
             <!-- 静息心率监测模块（独立模块） -->
-            <section class="upload-section resting-section">
+            <section class="upload-section resting-section" id="sec-resting">
                 <h2>🛌 静息心率呼吸率长期监测</h2>
                 <p class="section-desc">
                     系统将通过活动监测模块自动判断宠物是否处于静息状态，只在静息时记录心率和呼吸率
@@ -397,9 +510,11 @@
                     </div>
                 </div>
             </section>
+            </div>
 
+            <div id="ws-activity" class="workspace-page">
             <!-- 活动量与步数监测模块 -->
-            <section class="upload-section activity-section">
+            <section class="upload-section activity-section" id="sec-activity">
                 <h2>🏃 活动量与步数监测</h2>
                 <p class="section-desc">
                     基于IMU加速度计数据，实时计算活动量(ENMO)、步数和卡路里消耗，提供可视化展示
@@ -518,9 +633,11 @@
                     </div>
                 </div>
             </section>
+            </div>
 
+            <div id="ws-sleep" class="workspace-page">
             <!-- 睡眠质量监测模块 -->
-            <section class="upload-section activity-section">
+            <section class="upload-section activity-section" id="sec-sleep">
                 <h2>😴 睡眠质量监测</h2>
                 <p class="section-desc">
                     基于IMU加速度计数据，实时监测宠物睡眠状态，分析睡眠质量和睡眠周期
@@ -647,9 +764,11 @@
                     </div>
                 </div>
             </section>
+            </div>
 
+            <div id="ws-files" class="workspace-page">
             <!-- 文件上传区域 -->
-            <section class="upload-section">
+            <section class="upload-section section-anchor" id="sec-files">
                 <h2>📁 数据文件上传</h2>
                 <div class="upload-area" id="uploadArea">
                     <div class="upload-content">
@@ -670,7 +789,9 @@
                     </div>
                 </div>
             </section>
+            </div>
 
+            <div id="ws-analytics" class="workspace-page">
             <!-- 处理状态 -->
             <section class="status-section" id="statusSection" style="display: none;">
                 <h2>⚙️ 处理状态</h2>
@@ -763,10 +884,7 @@
                             <button class="btn btn-success" onclick="performHealthAnalysis()" id="healthAnalysisBtn">
                                 🩺 开始健康分析
                             </button>
-                            <div class="analysis-config" style="margin-top: 10px;">
-                                <label for="agentEndpoint">Agent API地址:</label>
-                                <input type="text" id="agentEndpoint" placeholder="http://localhost:8000" style="margin-left: 10px; width: 200px;">
-                            </div>
+                            <p class="text-muted small health-analysis-agent-note">Agent 地址与 animal_id 请在页面顶部「蓝牙与上报」中配置。</p>
                         </div>
 
                         <div class="health-analysis-report" id="healthAnalysisReport" style="display: none; margin-top: 20px;">
@@ -975,7 +1093,9 @@
                     </table>
                 </div>
             </section>
+            </div>
 
+            <div id="ws-ble-charts" class="workspace-page">
             <!-- 蓝牙实时图表区域 -->
             <section class="results-section" id="bluetoothChartsSection" style="display: none;">
                 <h2>📊 蓝牙实时数据图表</h2>
@@ -1126,14 +1246,16 @@
                     </div>
                 </div>
             </section>
+            </div>
 
+            <div id="ws-chat" class="workspace-page">
             <!-- 宠物健康对话区域 -->
             <section class="upload-section health-chat-section" id="healthChatSection">
                 <div class="health-chat-header">
                     <div class="health-chat-title">
                         <h2>💬 宠物健康智能对话</h2>
                         <p class="health-chat-subtitle">
-                            与 AI 助手对话，获取宠物健康相关的专业建议和解答
+                            默认直连本机 <span class="mono">http://127.0.0.1:8000/v1/chat/completions</span>；animal_id 与「蓝牙与上报」区块一致，用于启用数据库检索（如 <code>sql.search</code>）。
                         </p>
                     </div>
 
@@ -1151,15 +1273,15 @@
                     </div>
                 </div>
 
-                <!-- 对话界面（固定使用内置Agent地址，无需手动输入） -->
+                <!-- 对话界面（Agent 基址在「蓝牙与上报」配置） -->
                 <div class="chat-container" id="chatContainer">
                     <div class="chat-messages" id="chatMessages">
                         <div class="welcome-message">
                             <div class="message-avatar">🤖</div>
                             <div class="message-content">
                                 <div class="message-text">
-                                    您好！我是宠物健康助手，可以帮您解答关于宠物健康、护理、训练等方面的问题。
-                                    请告诉我您的宠物信息和想要咨询的问题。
+                                    您好！我是宠物健康助手。对话请求会带上当前配置的 <strong>animal_id</strong>（与蓝牙上报一致），以便查询该宠物的入库数据。
+                                    请告诉我您关心的问题。
                                 </div>
                                 <div class="message-time">系统消息</div>
                             </div>
@@ -1172,51 +1294,20 @@
                             <button class="btn btn-voice" onclick="toggleVoiceRecognition()" id="voiceBtn" title="语音输入">
                                 <span id="voiceIcon">🎤</span>
                             </button>
-                            <button class="btn btn-success" onclick="sendChatMessage()" id="sendChatBtn" disabled>发送</button>
+                            <button type="button" class="btn btn-success" id="sendChatBtn" disabled>发送</button>
                         </div>
                         <div class="chat-tips">
-                            💡 提示：您可以询问宠物的饮食、运动、行为、疾病预防等问题 | 点击麦克风图标使用语音输入
+                            💡 修改 animal_id 请至「蓝牙与上报」；演示前请确认本机 Agent 已监听 8000 端口。
                         </div>
                     </div>
                 </div>
             </section>
+            </div>
+
+            </div>
+            </aside>
 
         </div>
-
-        <!-- 算法参数设置 -->
-        <aside class="settings-panel" id="settingsPanel">
-            <h3>⚙️ 算法参数</h3>
-            <div class="setting-group">
-                <label>采样率 (Hz):</label>
-                <input type="number" id="samplingRate" value="50" min="1" max="1000">
-            </div>
-            <div class="setting-group">
-                <label>心率范围 (bpm):</label>
-                <input type="number" id="heartRateMin" value="48" min="30" max="100" placeholder="最小值">
-                <input type="number" id="heartRateMax" value="180" min="100" max="300" placeholder="最大值">
-            </div>
-            <div class="setting-group">
-                <label>呼吸频率范围 (bpm):</label>
-                <input type="number" id="respRateMin" value="6" min="3" max="15" placeholder="最小值">
-                <input type="number" id="respRateMax" value="30" min="15" max="60" placeholder="最大值">
-            </div>
-            <div class="setting-group">
-                <label>滤波窗口大小:</label>
-                <input type="number" id="filterWindow" value="10" min="3" max="50">
-            </div>
-            <div class="setting-group">
-                <label>心率平滑长度:</label>
-                <input type="number" id="heartRateSmoothing" value="30" min="5" max="60" title="保留最近N次心率结果取平均，值越大越平滑但响应越慢">
-            </div>
-            <div class="setting-group">
-                <label>心率变化阈值(bpm):</label>
-                <input type="number" id="heartRateDelta" value="10" min="5" max="30" title="限制心率每次最大变化幅度，防止突变">
-            </div>
-            <button class="btn btn-primary" onclick="applySettings()">应用设置</button>
-        </aside>
-
-        <!-- 设置按钮 -->
-        <button class="settings-toggle" onclick="toggleSettings()">⚙️</button>
     </div>
 
     <!-- 加载指示器 -->
@@ -1346,74 +1437,7 @@
         </div>
     </div>
 
-    <script src="radar-processor.js?v=20260213-2"></script>
-    <script src="azure-gpt.js?v=20260213-2"></script>
-    <script src="resting-monitor.js?v=20260302-2"></script>
-    <script src="activity-monitor.js?v=20260302-2"></script>
-    <script src="sleep-monitor.js?v=20260302-2"></script>
-    <!-- Markdown 渲染（marked）+ 安全净化（DOMPurify） -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-
-    <!-- Three.js 用于 3D 姿态可视化 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-
-    <!-- 姿态解算模块 -->
-    <script src="attitude-solver.js?v=20260309-optimized"></script>
-
-    <script src="app.js?v=20260309-calibration"></script>
-
-    <!-- BLE调试代码 -->
-    <script>
-        window.addEventListener('load', function() {
-            console.log('🔍 BLE调试信息:');
-            console.log('window.BLE存在:', typeof window.BLE);
-            if (window.BLE) {
-                console.log('BLE对象属性:', Object.keys(window.BLE));
-                console.log('BLE.connect方法:', typeof window.BLE.connect);
-            }
-
-            console.log('window.app存在:', typeof window.app);
-            if (window.app) {
-                console.log('app.processor存在:', typeof window.app.processor);
-                if (window.app.processor) {
-                    console.log('processor.fs:', window.app.processor.fs);
-                }
-            }
-
-            // 测试BLE连接按钮
-            const bleBtn = document.getElementById('bleConnectBtn');
-            if (bleBtn) {
-                console.log('BLE连接按钮找到:', bleBtn);
-                console.log('按钮onclick属性:', bleBtn.getAttribute('onclick'));
-                console.log('按钮onclick函数:', bleBtn.onclick);
-                console.log('bleConnect函数存在:', typeof window.bleConnect);
-            } else {
-                console.error('BLE连接按钮未找到!');
-            }
-
-            // 测试手动调用
-            if (window.bleConnect) {
-                console.log('bleConnect函数可以调用');
-                // 如果BLE对象不存在，尝试重新创建
-                if (!window.BLE) {
-                    console.warn('BLE对象不存在，尝试重新创建...');
-                    try {
-                        // 重新执行bluetooth.js的内容
-                        const script = document.createElement('script');
-                        script.src = 'bluetooth.js?v=' + Date.now();
-                        document.head.appendChild(script);
-                        script.onload = function() {
-                            console.log('BLE对象重新创建完成:', typeof window.BLE);
-                        };
-                    } catch (e) {
-                        console.error('重新创建BLE失败:', e);
-                    }
-                }
-            } else {
-                console.error('bleConnect函数不存在!');
-            }
-        });
-    </script>
+    <!-- 应用入口：所有业务代码均通过 ES Modules 加载 -->
+    <script type="module" src="src/main.js"></script>
 </body>
 </html>

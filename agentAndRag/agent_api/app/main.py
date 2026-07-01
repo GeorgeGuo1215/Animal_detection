@@ -1,46 +1,61 @@
 from __future__ import annotations
 
 import os
+import sys
+import threading
 import traceback
+from pathlib import Path
+
+# Repo root (Animal_detection/) so `import integration` works when running from agentAndRag
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from .auth import APIKeyAuthMiddleware, load_api_keys
-
-from .rate_limit import RateLimitMiddleware
-from .session_manager import get_session_manager
-from .rag_tools import rag_reindex_tool, rag_search_tool, warmup_rag_cache
-from .tool_registry import get_registry
-from .tools_builtin import register_builtin_tools, register_debug_tools
-from .tools_mcp import register_mcp_tools
-from .routes_openai import router as openai_router
-from .routes_chat_ui import router as chat_ui_router
+from .context.request_context import ANIMAL_REQUIRED_TOOLS, filter_tools_without_animal, get_request_animal_id, set_request_animal_id
+from .llm.llm_client import AsyncOpenAIClient, aclose_shared_async_client, get_shared_async_client
+from .llm.llm_client_stream import aclose_shared_async_stream_client
+from .middleware.auth import APIKeyAuthMiddleware, load_api_keys
+from .middleware.rate_limit import RateLimitMiddleware
+from .persistence.qa_store import (
+    get_feedback_stats, get_knowledge_gaps, get_qa_stats,
+    init_db as _init_qa_db, query_qa_history, submit_feedback,
+)
+from .persistence.session_manager import get_session_manager
+from .persistence.trace_store import new_trace_id, write_trace
+from .routers.routes_chat_ui import router as chat_ui_router
+from .routers.routes_openai import router as openai_router
 from .schemas import (
     AgentPlanAndSolveRequest,
     AgentPlanAndSolveResponse,
-    JobStatusResponse,
     RagReindexRequest,
     RagSearchRequest,
+    SqlSearchRequest,
     ToolCallRequest,
     ToolListResponse,
     ToolSpecOut,
     ToolResponse,
 )
-from .llm_client import AsyncOpenAIClient
-from .plan_and_solve import AsyncPlanAndSolveAgent
-from .trace_store import new_trace_id, write_trace
-from .qa_store import (
-    get_feedback_stats, get_knowledge_gaps, get_qa_stats,
-    init_db as _init_qa_db, query_qa_history, submit_feedback,
-)
+from .hf_local_model import is_local_path, resolve_embedding_model_id, resolve_rerank_model_id
+from .services.plan_and_solve import AsyncPlanAndSolveAgent
+from .sql_search import sql_search_tool
+from .tools.rag_tools import rag_reindex_tool, rag_search_tool, warmup_rag_cache
+from .tools.tool_registry import get_registry
+from .tools.tools_builtin import register_builtin_tools, register_debug_tools
+from .tools.tools_mcp import register_mcp_tools
+
+from integration.api.routes_ingest import router as integration_ingest_router
 
 
 app = FastAPI(title="PetMind Agent API", version="0.4.0")
 
 app.include_router(openai_router)
 app.include_router(chat_ui_router)
+app.include_router(integration_ingest_router, prefix="/integration", tags=["integration"])
 
 app.add_middleware(APIKeyAuthMiddleware)
 
@@ -48,19 +63,123 @@ _rl_rate = float(os.getenv("AGENT_RATE_LIMIT", "30"))
 _rl_burst = int(os.getenv("AGENT_RATE_BURST", str(int(_rl_rate))))
 app.add_middleware(RateLimitMiddleware, rate=_rl_rate, burst=_rl_burst)
 
-if os.getenv("AGENT_ENABLE_CORS", "0") == "1":
-    _origins = [o.strip() for o in os.getenv("AGENT_CORS_ORIGINS", "*").split(",") if o.strip()]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_origins if _origins != ["*"] else ["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"],
-    )
+# --- CORS：前端与 Agent 不同端口时（如 web 在 :8001、Agent 在 :8000）浏览器会拦截，需返回 Access-Control-Allow-Origin ---
+_CORS_DEFAULT_ORIGINS = (
+    "http://127.0.0.1:8000 http://localhost:8000 "
+    "http://127.0.0.1:8001 http://localhost:8001 "
+    "http://127.0.0.1:5500 http://localhost:5500 "
+    "http://127.0.0.1:5173 http://localhost:5173"
+)
+# 任意本机端口（Live Server、python -m http.server、Vite 等），避免仅白名单漏端口导致无 CORS 头
+_CORS_LOCAL_ORIGIN_REGEX = r"https?://(127\.0\.0\.1|localhost)(:\d+)?$"
+_env_cors_enable = os.getenv("AGENT_ENABLE_CORS", "1").strip().lower()
+_env_cors_origins = os.getenv("AGENT_CORS_ORIGINS", "").strip()
+_cors_on = _env_cors_enable not in ("0", "false", "no", "off")
+
+if _cors_on:
+    if _env_cors_origins == "*":
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With", "X-Animal-Id"],
+        )
+    else:
+        _parts = _env_cors_origins.split(",") if _env_cors_origins else _CORS_DEFAULT_ORIGINS.split()
+        _cors_allow = [o.strip() for o in _parts if o.strip()]
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_cors_allow if _cors_allow else ["http://127.0.0.1:8001"],
+            allow_origin_regex=_CORS_LOCAL_ORIGIN_REGEX,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With", "X-Animal-Id"],
+        )
+
+
+# --- Readiness state --------------------------------------------------------
+# Liveness (/health) is up the moment the process starts; readiness (/ready)
+# flips true only after the (async) RAG warmup finishes, so an orchestrator
+# won't route traffic into a cold instance whose first request would be slow.
+_READY: bool = False
+_WARMUP_INFO: Dict[str, Any] = {"status": "pending"}
+
+
+def _run_rag_warmup() -> None:
+    """Blocking RAG cache warmup, run in a background thread so it never blocks
+    server startup / liveness. Marks the process ready when finished."""
+    global _READY, _WARMUP_INFO
+    try:
+        from RAG.simple_rag.config import default_config
+
+        repo_root = Path(__file__).resolve().parents[2]
+        cfg = default_config(repo_root)
+        device = os.getenv("AGENT_WARMUP_DEVICE") or None
+
+        hf_offline = os.getenv("AGENT_HF_OFFLINE", "").strip().lower() in ("1", "true", "yes")
+        if hf_offline:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            print("[startup] Hugging Face hub offline mode (AGENT_HF_OFFLINE=1): use local model dirs or set AGENT_EMBEDDING_MODEL_PATH.")
+
+        embedding_model = resolve_embedding_model_id(None, repo_root)
+        rerank_model = resolve_rerank_model_id(None, repo_root)
+
+        enable_bm25 = os.getenv("AGENT_WARMUP_BM25", "1") == "1"
+        enable_reranker = os.getenv("AGENT_WARMUP_RERANKER", "1") == "1"
+        # Offline: avoid pulling CrossEncoder from Hub if only a hub name is configured
+        if hf_offline and enable_reranker and not is_local_path(rerank_model):
+            print("[startup] AGENT_HF_OFFLINE: disable reranker warmup (no local path). Set AGENT_RERANKER_MODEL_PATH or models/bge-reranker-large, or AGENT_WARMUP_RERANKER=0.")
+            enable_reranker = False
+
+        skip_warmup = hf_offline and not is_local_path(embedding_model)
+        if skip_warmup:
+            print(
+                "[startup] AGENT_HF_OFFLINE: skip RAG warmup — embedding model is not a local path. "
+                "Use agentAndRag/models/multilingual-e5-small, AGENT_EMBEDDING_MODEL_PATH, "
+                "or download once so it appears under HF_HOME/hub/models--org--name (snapshots/).",
+            )
+            _WARMUP_INFO = {"status": "skipped", "reason": "hf_offline_no_local_embedding"}
+            return
+
+        stats = warmup_rag_cache(
+            index_dir=cfg.index_dir,
+            embedding_model=embedding_model,
+            device=device,
+            enable_bm25=enable_bm25,
+            enable_reranker=enable_reranker,
+            rerank_model=rerank_model,
+        )
+
+        actual_device = device or "cpu"
+        try:
+            import torch
+            if torch.cuda.is_available() and actual_device != "cpu":
+                gpu_name = torch.cuda.get_device_name(0)
+                print(f"[startup] Device: {actual_device} ({gpu_name})")
+            else:
+                print("[startup] Device: cpu" + (" (CUDA available but not selected)" if torch.cuda.is_available() else ""))
+        except ImportError:
+            print(f"[startup] Device: {actual_device} (torch not found, cannot detect GPU)")
+        print(f"[startup] Embedding: {embedding_model}")
+        print(f"[startup] Reranker: {rerank_model if enable_reranker else 'disabled'}")
+        print(f"[startup] BM25: {'enabled' if enable_bm25 else 'disabled'}")
+        print(f"[startup] Index: {stats['index_size']} chunks")
+        _WARMUP_INFO = {"status": "ok", "index_size": stats.get("index_size")}
+    except Exception as exc:  # noqa: BLE001
+        print("[startup] RAG warmup failed; continuing without preloaded cache.")
+        print(f"[startup] Warmup error: {exc}")
+        print(traceback.format_exc())
+        _WARMUP_INFO = {"status": "failed", "error": str(exc)}
+    finally:
+        _READY = True
+        print("[startup] Readiness: /ready is now serving 200.")
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    global _READY, _WARMUP_INFO
     load_api_keys()
     _init_qa_db()
 
@@ -72,50 +191,39 @@ def _startup() -> None:
             register_mcp_tools(reg)
 
     if os.getenv("AGENT_WARMUP_RAG", "1") == "1":
-        from pathlib import Path
-        from RAG.simple_rag.config import default_config
+        # Warm up off the startup path so uvicorn finishes startup immediately
+        # and /health (liveness) responds right away; /ready flips when done.
+        threading.Thread(target=_run_rag_warmup, name="rag-warmup", daemon=True).start()
+    else:
+        _WARMUP_INFO = {"status": "disabled"}
+        _READY = True
 
-        repo_root = Path(__file__).resolve().parents[2]
-        cfg = default_config(repo_root)
-        device = os.getenv("AGENT_WARMUP_DEVICE") or None
-        embedding_model = os.getenv("AGENT_WARMUP_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
-        rerank_model = os.getenv("AGENT_WARMUP_RERANK_MODEL", "BAAI/bge-reranker-large")
-        enable_bm25 = os.getenv("AGENT_WARMUP_BM25", "1") == "1"
-        enable_reranker = os.getenv("AGENT_WARMUP_RERANKER", "1") == "1"
 
-        try:
-            stats = warmup_rag_cache(
-                index_dir=cfg.index_dir,
-                embedding_model=embedding_model,
-                device=device,
-                enable_bm25=enable_bm25,
-                enable_reranker=enable_reranker,
-                rerank_model=rerank_model,
-            )
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    # Release the shared LLM httpx connection pools.
+    await aclose_shared_async_client()
+    await aclose_shared_async_stream_client()
+    # Close pooled MySQL connections used by sql.search / vitals.summary.
+    try:
+        from .sql_search.pool import close_pool
 
-            actual_device = device or "cpu"
-            try:
-                import torch
-                if torch.cuda.is_available() and actual_device != "cpu":
-                    gpu_name = torch.cuda.get_device_name(0)
-                    print(f"[startup] Device: {actual_device} ({gpu_name})")
-                else:
-                    print(f"[startup] Device: cpu" + (" (CUDA available but not selected)" if torch.cuda.is_available() else ""))
-            except ImportError:
-                print(f"[startup] Device: {actual_device} (torch not found, cannot detect GPU)")
-            print(f"[startup] Embedding: {embedding_model}")
-            print(f"[startup] Reranker: {rerank_model if enable_reranker else 'disabled'}")
-            print(f"[startup] BM25: {'enabled' if enable_bm25 else 'disabled'}")
-            print(f"[startup] Index: {stats['index_size']} chunks")
-        except Exception as exc:  # noqa: BLE001
-            print("[startup] RAG warmup failed; continuing without preloaded cache.")
-            print(f"[startup] Warmup error: {exc}")
-            print(traceback.format_exc())
+        close_pool()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
+    """Liveness probe — up as soon as the process is running."""
     return {"ok": True}
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    """Readiness probe — 200 once RAG warmup finished, 503 while still warming."""
+    status = 200 if _READY else 503
+    return JSONResponse(status_code=status, content={"ready": _READY, "warmup": _WARMUP_INFO})
 
 
 @app.post("/tools/rag/search", response_model=ToolResponse)
@@ -148,20 +256,44 @@ def rag_reindex(req: RagReindexRequest) -> ToolResponse:
         return resp
 
 
-@app.get("/tools", response_model=ToolListResponse)
-def tools_list() -> ToolListResponse:
+@app.post("/tools/sql/search", response_model=ToolResponse)
+def sql_search(request: Request, req: SqlSearchRequest) -> ToolResponse:
     trace_id = new_trace_id()
+    try:
+        set_request_animal_id(body_animal_id=req.animal_id, header_animal_id=request.headers.get("x-animal-id"))
+        data = sql_search_tool(**req.model_dump(exclude={"animal_id"}))
+        resp = ToolResponse(ok=True, trace_id=trace_id, data=data)
+        write_trace(trace_id, tool="sql.search", request=req.model_dump(), response=resp.model_dump())
+        return resp
+    except Exception as e:  # noqa: BLE001
+        err = {"code": "SQL_SEARCH_FAILED", "message": str(e), "detail": {"traceback": traceback.format_exc()}}
+        resp = ToolResponse(ok=False, trace_id=trace_id, error=err)  # type: ignore[arg-type]
+        write_trace(trace_id, tool="sql.search", request=req.model_dump(), response=resp.model_dump(), error=str(e))
+        return resp
+
+
+@app.get("/tools", response_model=ToolListResponse)
+def tools_list(request: Request) -> ToolListResponse:
+    trace_id = new_trace_id()
+    set_request_animal_id(header_animal_id=request.headers.get("x-animal-id"))
     reg = get_registry()
-    tools = [ToolSpecOut(name=t.name, description=t.description, input_schema=t.input_schema) for t in reg.list_tools()]
+    raw = reg.list_tools()
+    if not get_request_animal_id():
+        raw = [t for t in raw if t.name not in ANIMAL_REQUIRED_TOOLS]
+    tools = [ToolSpecOut(name=t.name, description=t.description, input_schema=t.input_schema) for t in raw]
     resp = ToolListResponse(ok=True, trace_id=trace_id, tools=tools)
     write_trace(trace_id, tool="tools.list", request={}, response=resp.model_dump())
     return resp
 
 
 @app.post("/tools/call", response_model=ToolResponse)
-async def tools_call(req: ToolCallRequest) -> ToolResponse:
+async def tools_call(request: Request, req: ToolCallRequest) -> ToolResponse:
     trace_id = new_trace_id()
+    set_request_animal_id(body_animal_id=req.animal_id, header_animal_id=request.headers.get("x-animal-id"))
     reg = get_registry()
+    if req.tool_name == "sql.search" and not get_request_animal_id():
+        err = {"code": "ANIMAL_ID_REQUIRED", "message": "sql.search requires animal_id (JSON field or X-Animal-Id header)."}
+        return ToolResponse(ok=False, trace_id=trace_id, error=err)  # type: ignore[arg-type]
     try:
         data = await reg.call(req.tool_name, req.arguments)
         resp = ToolResponse(ok=True, trace_id=trace_id, data=data)
@@ -175,20 +307,35 @@ async def tools_call(req: ToolCallRequest) -> ToolResponse:
 
 
 @app.post("/agent/plan_and_solve", response_model=AgentPlanAndSolveResponse)
-async def agent_plan_and_solve(req: AgentPlanAndSolveRequest) -> AgentPlanAndSolveResponse:
+async def agent_plan_and_solve(request: Request, req: AgentPlanAndSolveRequest) -> AgentPlanAndSolveResponse:
     trace_id = new_trace_id()
     try:
+        set_request_animal_id(body_animal_id=req.animal_id, header_animal_id=request.headers.get("x-animal-id"))
         reg = get_registry()
-        llm = AsyncOpenAIClient(base_url=req.llm_base_url, api_key=req.llm_api_key, model=req.llm_model)
-        agent = AsyncPlanAndSolveAgent(registry=reg, llm=llm)
-        plan = await agent.plan(query=req.query, allowed_tools=req.allowed_tools)
-        answer, tool_results = await agent.solve(
-            query=req.query,
-            plan_steps=plan,
-            allowed_tools=req.allowed_tools,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
+        # Reuse the shared pooled client for the default config; only build a
+        # throwaway client (and close it) when the caller overrides LLM config.
+        use_custom_llm = any([req.llm_base_url, req.llm_api_key, req.llm_model])
+        llm = (
+            AsyncOpenAIClient(base_url=req.llm_base_url, api_key=req.llm_api_key, model=req.llm_model)
+            if use_custom_llm
+            else get_shared_async_client()
         )
+        agent = AsyncPlanAndSolveAgent(registry=reg, llm=llm)
+        allowed_tools = req.allowed_tools
+        if allowed_tools is not None:
+            allowed_tools = filter_tools_without_animal(allowed_tools)
+        try:
+            plan = await agent.plan(query=req.query, allowed_tools=allowed_tools)
+            answer, tool_results = await agent.solve(
+                query=req.query,
+                plan_steps=plan,
+                allowed_tools=allowed_tools,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+            )
+        finally:
+            if use_custom_llm:
+                await llm.close()
         resp = AgentPlanAndSolveResponse(ok=True, trace_id=trace_id, answer=answer, plan=plan, tool_results=tool_results)
         write_trace(trace_id, tool="agent.plan_and_solve", request=req.model_dump(), response=resp.model_dump())
         return resp

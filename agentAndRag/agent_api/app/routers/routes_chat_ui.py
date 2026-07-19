@@ -1,20 +1,27 @@
 """
-PetMind chat UI and admin dashboard served at /chat and /admin.
+PetMind chat UI and admin dashboard served at /chat, /chat-moe (MoE debug), and /admin.
 No external dependencies; pure HTML/CSS/JS inlined (except marked.js CDN).
 """
 from __future__ import annotations
 
+import json
 import sys
+import time
+import uuid
 from pathlib import Path
+from typing import Any, Dict, List
 
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.append(str(_REPO_ROOT))
 
 from shared.chat_feedback_widget import FEEDBACK_WIDGET_JS, render_feedback_widget_css
+
+from ..services.moe import MoEOrchestrator, OrchestratorConfig, RouterConfig
+from ..tools.tool_registry import get_registry
 
 router = APIRouter()
 
@@ -442,6 +449,162 @@ _CHAT_HTML = _CHAT_HTML.replace("__FEEDBACK_WIDGET_JS__", FEEDBACK_WIDGET_JS)
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_ui():
     return _CHAT_HTML
+
+
+_MOE_TEST_HTML = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PetMind MoE</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#fdf6ec;--card:#fff;--border:#f5deb3;--accent:#e87b35;--accent-dark:#d35400;--accent-light:#fff3e0;--text:#2d1f10;--text2:#8b6e4e;--think-bg:#fefce8;--think-border:#fbbf24;--radius:16px;--shadow-sm:0 4px 12px rgba(232,123,53,.06);--shadow-md:0 8px 30px rgba(232,123,53,.13)}
+body{font-family:Inter,"Noto Sans SC",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;background-image:radial-gradient(circle,rgba(232,123,53,.04) 1px,transparent 1px);background-size:24px 24px}
+header{background:rgba(255,255,255,.78);padding:14px 24px;display:flex;align-items:center;gap:12px;flex-shrink:0;color:var(--text);border-bottom:1px solid rgba(232,123,53,.14);box-shadow:0 4px 30px rgba(0,0,0,.03);position:relative;z-index:10;backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%)}
+header h1{font-size:20px;font-weight:700;letter-spacing:-.3px;color:var(--accent)}header .subtitle{font-size:12px;color:var(--text2);font-weight:500}.settings{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:13px}.role-hint{font-size:12px;color:var(--text2);white-space:nowrap;font-weight:500}.lang-toggle,.role-toggle{display:flex;border-radius:10px;overflow:hidden;border:1px solid rgba(232,123,53,.18);background:rgba(255,255,255,.55)}.lang-toggle button,.role-toggle button{padding:6px 16px;border:none;background:transparent;color:var(--text2);font-size:13px;cursor:pointer;transition:all .25s cubic-bezier(.4,0,.2,1);font-weight:500}.lang-toggle button.active,.role-toggle button.active{background:var(--accent-light);color:var(--accent-dark);font-weight:700;box-shadow:0 2px 8px rgba(232,123,53,.12)}
+#chat{flex:1;overflow-y:auto;padding:24px 20px;display:flex;flex-direction:column;gap:20px;scroll-behavior:smooth}.msg{max-width:840px;width:100%;margin:0 auto;display:flex;gap:14px;animation:fadeSlideIn .35s ease both}.msg.user{flex-direction:row-reverse}.msg .bubble{padding:14px 18px;border-radius:var(--radius);line-height:1.75;font-size:15px;word-break:break-word}.msg.user .bubble{background:linear-gradient(135deg,#f0a060,#e87b35);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap;box-shadow:0 6px 18px rgba(232,123,53,.22)}.msg.assistant .bubble{background:#fff;border:1px solid var(--border);border-bottom-left-radius:4px;min-width:60px;box-shadow:0 4px 20px rgba(0,0,0,.04)}.msg .avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;box-shadow:0 4px 12px rgba(0,0,0,.08);background:#fff}.msg.user .avatar{background:linear-gradient(135deg,#fff3e0,#ffcc80);color:var(--accent)}.msg.assistant .avatar{background:linear-gradient(135deg,#fff3e0,#ffb74d);border:2px solid #fff}.msg.assistant .bubble h1,.msg.assistant .bubble h2,.msg.assistant .bubble h3{margin:14px 0 6px;font-weight:600;color:var(--accent)}.msg.assistant .bubble p{margin:6px 0}.msg.assistant .bubble ul,.msg.assistant .bubble ol{margin:6px 0;padding-left:20px}.msg.assistant .bubble code{background:#fff3e0;padding:1px 5px;border-radius:4px;color:#9a3412}.msg.assistant .bubble pre{background:#431407;color:#ffedd5;padding:14px;border-radius:10px;overflow-x:auto;margin:10px 0;font-size:13px}
+.think-box{max-width:840px;width:100%;margin:4px auto;background:linear-gradient(135deg,#fefce8,#fffde7);border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:all .3s cubic-bezier(.4,0,.2,1)}.think-box:hover{box-shadow:0 4px 16px rgba(251,191,36,.12);border-color:var(--think-border)}.think-header{padding:10px 16px;cursor:pointer;font-size:13px;color:#b45309;font-weight:600;display:flex;align-items:center;gap:8px;user-select:none}.think-header::before{content:"";display:inline-block;width:0;height:0;border-left:5px solid #b45309;border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .25s}.think-box.open .think-header::before{transform:rotate(90deg)}.think-body{display:none;padding:8px 16px 14px;font-size:12px;color:#78716c;font-family:"SF Mono",Consolas,monospace;line-height:1.6;max-height:320px;overflow-y:auto}.think-box.open .think-body{display:block;animation:slideDown .25s ease both}.think-line{padding:3px 0;white-space:pre-wrap;word-break:break-word}.think-line.tool{color:#d97706;font-weight:500}.think-line.status{color:#0284c7}.think-line.done{color:#15803d;font-weight:500}.download-row{max-width:840px;width:100%;margin:-10px auto 0;display:flex;justify-content:flex-end}.download-btn{border:1px solid rgba(232,123,53,.22);background:#fff;color:var(--accent-dark);border-radius:999px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:var(--shadow-sm);transition:all .2s}.download-btn:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);background:var(--accent-light)}
+.welcome{max-width:840px;margin:38px auto;text-align:center;color:var(--text2);animation:fadeSlideIn .55s ease both;padding:0 20px}.welcome .pet-icon{font-size:72px;margin-bottom:16px;animation:floatBounce 4s cubic-bezier(.45,0,.55,1) infinite;display:inline-block;filter:drop-shadow(0 10px 20px rgba(232,123,53,.18))}.welcome h2{color:var(--text);margin-bottom:12px;font-size:28px;letter-spacing:-.5px;font-weight:700}.welcome p{font-size:15px;line-height:1.8;max-width:620px;margin:0 auto;color:#6b7280}.role-picker{display:flex;gap:20px;justify-content:center;margin:32px 0 12px;flex-wrap:wrap}.role-card{flex:1;min-width:210px;max-width:270px;background:#fff;border:2px solid var(--border);border-radius:24px;padding:28px 20px 24px;cursor:pointer;transition:all .35s cubic-bezier(.34,1.56,.64,1);text-align:center;box-shadow:0 4px 16px rgba(0,0,0,.04);position:relative;overflow:hidden}.role-card:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(232,123,53,.12);border-color:transparent}.role-card.selected{border-color:transparent;background:linear-gradient(160deg,#fff,#fff7ed);box-shadow:0 12px 32px rgba(232,123,53,.16)}.role-card.selected::after{content:"";position:absolute;inset:0;border-radius:22px;box-shadow:inset 0 0 0 2.5px var(--accent)}.role-card .rc-icon{font-size:42px;margin-bottom:12px;display:inline-block}.role-card .rc-name{font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px}.role-card.selected .rc-name{color:var(--accent-dark)}.role-card .rc-desc{font-size:13px;color:var(--text2);line-height:1.6}.examples{margin-top:24px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center}.examples button{background:#fff;border:1px solid var(--border);border-radius:100px;padding:10px 20px;font-size:14px;color:var(--text);cursor:pointer;transition:all .25s;box-shadow:0 2px 8px rgba(0,0,0,.03);font-weight:500}.examples button:hover{background:var(--accent);color:#fff;border-color:var(--accent);transform:translateY(-3px)}
+#input-area{flex-shrink:0;background:rgba(255,255,255,.86);border-top:1px solid rgba(232,123,53,.10);padding:16px 20px 24px;box-shadow:0 -8px 30px rgba(0,0,0,.03);position:relative;z-index:5;backdrop-filter:blur(20px)}#input-wrap{max-width:840px;margin:0 auto;display:flex;gap:12px;align-items:flex-end;background:#fff;border-radius:20px;padding:6px;box-shadow:0 4px 20px rgba(0,0,0,.05);border:1px solid var(--border);transition:all .25s}#input-wrap:focus-within{border-color:var(--accent);box-shadow:0 8px 32px rgba(232,123,53,.16);transform:translateY(-1px)}#user-input{flex:1;resize:none;border:none;background:transparent;padding:10px 14px;font-size:15px;font-family:inherit;line-height:1.5;min-height:24px;max-height:150px;outline:none}#send-btn{padding:0 24px;height:44px;background:linear-gradient(135deg,#f0a060,#e87b35);color:#fff;border:none;border-radius:14px;font-size:15px;font-weight:700;cursor:pointer;transition:all .25s;white-space:nowrap;box-shadow:0 4px 12px rgba(232,123,53,.30)}#send-btn:disabled{background:#e5e7eb;color:#9ca3af;cursor:not-allowed;box-shadow:none}#send-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 6px 20px rgba(232,123,53,.38)}
+@keyframes fadeSlideIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}@keyframes slideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@keyframes floatBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:rgba(232,123,53,.28);border-radius:10px;border:2px solid var(--bg)}@media(max-width:680px){header{padding:12px 14px;gap:8px;flex-wrap:wrap}.settings{width:100%;margin-left:0}.role-hint{display:none}.lang-toggle button,.role-toggle button{padding:6px 10px}.role-card{min-width:145px;padding:20px 14px}.welcome h2{font-size:24px}#input-wrap{padding:4px 8px}#send-btn{padding:0 18px;height:40px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>PetMind</h1><span class="subtitle" id="header-subtitle">MoE Veterinary Committee</span>
+  <div class="settings">
+    <div class="lang-toggle"><button id="lang-zh" class="active" onclick="setLang('zh')">中文</button><button id="lang-en" onclick="setLang('en')">EN</button></div>
+    <span class="role-hint" id="header-role-label">身份：宠物主</span>
+    <div class="role-toggle"><button id="role-pet_owner" class="active" onclick="setRole('pet_owner')">宠物主</button><button id="role-veterinarian" onclick="setRole('veterinarian')">兽医</button></div>
+  </div>
+</header>
+<div id="chat">
+  <div class="welcome" id="welcome-panel">
+    <div class="pet-icon">🐾</div><h2 id="welcome-title">欢迎使用 PetMind</h2>
+    <p id="welcome-desc">PetMind 是面向猫狗等伴侣动物的健康问答助手，结合兽医知识库、RAG 检索、MCP 工具和多专家 MoE 编排。你可以用宠物主视角获得更易懂的建议，也可以切换到兽医身份查看更专业的分析。</p>
+    <div class="role-picker">
+      <div class="role-card selected" id="card-pet_owner" onclick="setRole('pet_owner')"><div class="rc-icon">🐶</div><div class="rc-name" id="card-owner-name">宠物主</div><div class="rc-desc" id="card-owner-desc">通俗、可执行<br>适合日常照护与就医判断</div></div>
+      <div class="role-card" id="card-veterinarian" onclick="setRole('veterinarian')"><div class="rc-icon">🩺</div><div class="rc-name" id="card-vet-name">兽医</div><div class="rc-desc" id="card-vet-desc">专业、证据优先<br>展示鉴别诊断与风险边界</div></div>
+    </div>
+    <div class="examples" id="example-questions"></div>
+  </div>
+</div>
+<div id="input-area"><div id="input-wrap"><textarea id="user-input" rows="1" placeholder="例如：我的狗最近食欲不振，还呕吐，应该怎么办？"></textarea><button id="send-btn">发送</button></div></div>
+<script>
+const chatEl=document.getElementById('chat'),inputEl=document.getElementById('user-input'),sendBtn=document.getElementById('send-btn');
+const messages=[];let streaming=false,currentLang=localStorage.getItem('petmind_moe_lang')||'zh',currentRole=localStorage.getItem('petmind_moe_role')||'pet_owner';
+const I18N={zh:{sub:'MoE 兽医多专家会诊',roleOwner:'宠物主',roleVet:'兽医',roleLabelOwner:'身份：宠物主',roleLabelVet:'身份：兽医',welcomeTitle:'欢迎使用 PetMind',welcomeDesc:'PetMind 是面向猫狗等伴侣动物的健康问答助手，结合兽医知识库、RAG 检索、MCP 工具和多专家 MoE 编排。你可以用宠物主视角获得更易懂的建议，也可以切换到兽医身份查看更专业的分析。',ownerDesc:'通俗、可执行<br>适合日常照护与就医判断',vetDesc:'专业、证据优先<br>展示鉴别诊断与风险边界',placeholderOwner:'例如：我的狗最近食欲不振，还呕吐，应该怎么办？',placeholderVet:'例如：犬细小病毒感染的鉴别诊断和处置流程是什么？',send:'发送',thinking:'MoE 会诊过程（点击展开/折叠）',download:'下载本轮 MoE 详情',examplesOwner:['猫咪突然不吃饭要观察哪些风险？','狗狗呕吐伴随腹泻需要马上就医吗？','幼犬疫苗期间可以洗澡吗？'],examplesVet:['犬细小病毒感染的鉴别诊断要点','猫下泌尿道疾病的初步处置建议','慢性肾病猫的营养管理原则']},en:{sub:'MoE Veterinary Committee',roleOwner:'Pet Owner',roleVet:'Veterinarian',roleLabelOwner:'Role: Pet Owner',roleLabelVet:'Role: Veterinarian',welcomeTitle:'Welcome to PetMind',welcomeDesc:'PetMind is a companion-animal health assistant for cats, dogs, and related pet care scenarios. It combines a veterinary RAG knowledge base, MCP tools, and a weighted MoE expert committee for safer answers.',ownerDesc:'Plain and actionable<br>For daily care and triage',vetDesc:'Evidence-focused<br>For differential diagnosis and risk control',placeholderOwner:'Example: My dog has poor appetite and vomiting. What should I do?',placeholderVet:'Example: What is the differential diagnosis and management workflow for canine parvovirus?',send:'Send',thinking:'MoE consultation trace (click to expand/collapse)',download:'Download this MoE turn',examplesOwner:['What risks should I watch if my cat stops eating?','Does vomiting plus diarrhea require urgent care?','Can a puppy bathe during vaccination period?'],examplesVet:['Differential diagnosis points for canine parvovirus','Initial management of feline lower urinary tract disease','Nutrition principles for cats with chronic kidney disease']}};
+function t(k){return I18N[currentLang][k]||k}function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}function scroll(){chatEl.scrollTop=chatEl.scrollHeight}
+function setLang(lang){currentLang=lang;localStorage.setItem('petmind_moe_lang',lang);document.documentElement.lang=lang==='zh'?'zh-CN':'en';document.getElementById('lang-zh').classList.toggle('active',lang==='zh');document.getElementById('lang-en').classList.toggle('active',lang==='en');applyText()}
+function setRole(role){currentRole=role;localStorage.setItem('petmind_moe_role',role);document.getElementById('role-pet_owner').classList.toggle('active',role==='pet_owner');document.getElementById('role-veterinarian').classList.toggle('active',role==='veterinarian');document.getElementById('card-pet_owner').classList.toggle('selected',role==='pet_owner');document.getElementById('card-veterinarian').classList.toggle('selected',role==='veterinarian');applyText()}
+function applyText(){document.getElementById('header-subtitle').textContent=t('sub');document.getElementById('header-role-label').textContent=currentRole==='veterinarian'?t('roleLabelVet'):t('roleLabelOwner');document.getElementById('role-pet_owner').textContent=t('roleOwner');document.getElementById('role-veterinarian').textContent=t('roleVet');document.getElementById('welcome-title').textContent=t('welcomeTitle');document.getElementById('welcome-desc').innerHTML=t('welcomeDesc');document.getElementById('card-owner-name').textContent=t('roleOwner');document.getElementById('card-vet-name').textContent=t('roleVet');document.getElementById('card-owner-desc').innerHTML=t('ownerDesc');document.getElementById('card-vet-desc').innerHTML=t('vetDesc');inputEl.placeholder=currentRole==='veterinarian'?t('placeholderVet'):t('placeholderOwner');sendBtn.textContent=t('send');renderExamples()}
+function renderExamples(){const box=document.getElementById('example-questions');box.innerHTML='';(currentRole==='veterinarian'?t('examplesVet'):t('examplesOwner')).forEach(q=>{const b=document.createElement('button');b.textContent=q;b.onclick=()=>{inputEl.value=q;inputEl.focus()};box.appendChild(b)})}
+function addUserMsg(text){document.getElementById('welcome-panel')?.remove();chatEl.insertAdjacentHTML('beforeend',`<div class="msg user"><div class="avatar">🙂</div><div class="bubble">${esc(text)}</div></div>`);scroll()}
+function createAssistantMsg(){const id='msg-'+Date.now();chatEl.insertAdjacentHTML('beforeend',`<div class="think-box open" id="${id}-think"><div class="think-header" onclick="this.parentElement.classList.toggle('open')">${t('thinking')}</div><div class="think-body"></div></div><div class="msg assistant" id="${id}"><div class="avatar">🐾</div><div class="bubble"></div></div>`);scroll();return id}
+function appendThink(id,text,cls){const body=document.querySelector(`#${id}-think .think-body`);if(!body)return;body.insertAdjacentHTML('beforeend',`<div class="think-line ${cls||''}">${esc(text)}</div>`);body.scrollTop=body.scrollHeight;scroll()}
+function addDownload(turn){const id='dl-'+Date.now();chatEl.insertAdjacentHTML('beforeend',`<div class="download-row"><button class="download-btn" id="${id}">${t('download')}</button></div>`);document.getElementById(id).onclick=()=>downloadJson(turn);scroll()}
+function downloadJson(turn){const blob=new Blob([JSON.stringify(turn,null,2)],{type:'application/json;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`petmind-moe-turn-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(a.href)}
+function summarize(status,detail){if(status==='routing'){if(detail.out_of_scope)return '越界：'+(detail.reason||'');if(detail.selected_experts)return '路由专家：'+detail.selected_experts.join(', ')+' | weights='+JSON.stringify(detail.weights||{});return detail.message||'路由中'}if(status==='expert_calling')return `${detail.name_zh||detail.expert} 会诊中，weight=${detail.weight??''}`;if(status==='expert_complete')return `${detail.name_zh||detail.expert} 完成，confidence=${detail.confidence??''}，RAG=${detail.hits_count??0}，tools=${(detail.tools_used||[]).join(', ')||'none'}`;if(status==='reviewing')return detail.verdict?`Critic: ${detail.verdict} ${(detail.issues||[]).join('; ')}`:(detail.message||'边界审核中');if(status==='generating')return '融合生成最终回答';return status||''}
+async function send(){const text=inputEl.value.trim();if(!text||streaming)return;streaming=true;sendBtn.disabled=true;inputEl.value='';addUserMsg(text);messages.push({role:'user',content:text});const msgId=createAssistantMsg();let full='',turn={question:text,user_role:currentRole,lang:currentLang,events:[],router:null,expert_opinions:[],tool_calls:[],critic:null,final_answer:''};try{const resp=await fetch('/chat-moe/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:messages.slice(-10),user_role:currentRole,response_lang:currentLang,temperature:.3,max_tokens:1200})});if(!resp.ok){document.querySelector(`#${msgId} .bubble`).textContent=`HTTP ${resp.status}: ${await resp.text()}`;return}const reader=resp.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop()||'';for(const line of lines){const trimmed=line.trim();if(!trimmed.startsWith('data: '))continue;const payload=trimmed.slice(6);if(payload==='[DONE]')continue;let chunk;try{chunk=JSON.parse(payload)}catch(_){continue}const delta=chunk.choices?.[0]?.delta,finish=chunk.choices?.[0]?.finish_reason,status=chunk.agent_status,detail=chunk.agent_detail||{};turn.events.push({status,detail,content:delta?.content||'',finish});if(status==='routing'&&detail.selected_experts)turn.router=detail;if(status==='expert_complete'){if(detail.opinion)turn.expert_opinions.push(detail.opinion);(detail.opinion?.tool_results||[]).forEach(x=>turn.tool_calls.push({expert:detail.expert,...x}))}if(status==='reviewing'&&detail.verdict)turn.critic=detail;if(status&&status!=='streaming')appendThink(msgId,summarize(status,detail),status==='expert_complete'?'done':(status==='expert_calling'?'tool':'status'));if(status==='streaming'&&delta?.content){full+=delta.content;document.querySelector(`#${msgId} .bubble`).innerHTML=marked.parse(full);scroll()}if(finish==='stop')break}}}catch(e){document.querySelector(`#${msgId} .bubble`).textContent='Network error: '+e.message}finally{if(full){messages.push({role:'assistant',content:full});turn.final_answer=full;addDownload(turn)}streaming=false;sendBtn.disabled=false;inputEl.focus()}}
+sendBtn.addEventListener('click',send);inputEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});inputEl.addEventListener('input',()=>{inputEl.style.height='auto';inputEl.style.height=Math.min(inputEl.scrollHeight,150)+'px'});setLang(currentLang);setRole(currentRole);
+</script>
+</body>
+</html>"""
+
+
+@router.get("/chat-moe", response_class=HTMLResponse)
+async def chat_moe_test_ui():
+    """Public MoE chat UI; the backing endpoint only exposes agent-moe streaming."""
+    return _MOE_TEST_HTML
+
+
+def _moe_request_id() -> str:
+    return f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+
+def _extract_moe_query(messages: List[Dict[str, Any]]) -> str:
+    for msg in reversed(messages or []):
+        if msg.get("role") == "user" and msg.get("content"):
+            return str(msg.get("content"))
+    return ""
+
+
+def _moe_system_context(messages: List[Dict[str, Any]], response_lang: str) -> str:
+    parts = [str(m.get("content")) for m in messages or [] if m.get("role") == "system" and m.get("content")]
+    if response_lang in {"zh", "en"}:
+        parts.append("请使用中文回答。" if response_lang == "zh" else "Please answer in English.")
+    return "\n".join(parts)
+
+
+def _moe_history(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    history = []
+    for msg in messages or []:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in {"user", "assistant"} and content:
+            history.append({"role": str(role), "content": str(content)})
+    return history
+
+
+def _moe_sse_chunk(request_id: str, status: str | None, detail: Dict[str, Any] | None, content: str = "", finish: str | None = None) -> str:
+    payload = {
+        "id": request_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "agent-moe",
+        "choices": [{"index": 0, "delta": {"content": content or None}, "finish_reason": finish}],
+        "agent_status": status,
+        "agent_detail": detail,
+    }
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+@router.post("/chat-moe/completions")
+async def chat_moe_public_completions(request: Request):
+    """Anonymous browser endpoint scoped to PetMind MoE only."""
+    body = await request.json()
+    messages = body.get("messages") or []
+    query = _extract_moe_query(messages)
+    user_role = body.get("user_role") if body.get("user_role") in {"pet_owner", "veterinarian"} else "pet_owner"
+    response_lang = body.get("response_lang") if body.get("response_lang") in {"zh", "en"} else "zh"
+    request_id = _moe_request_id()
+
+    async def event_generator():
+        orch = MoEOrchestrator(
+            registry=get_registry(),
+            config=OrchestratorConfig(
+                router=RouterConfig(),
+                temperature=float(body.get("temperature") or 0.3),
+                max_tokens=int(body.get("max_tokens") or 1200),
+                user_role=user_role,
+            ),
+        )
+        try:
+            async for event in orch.stream(
+                query=query,
+                system_context=_moe_system_context(messages, response_lang),
+                conversation_history=_moe_history(messages),
+            ):
+                yield _moe_sse_chunk(
+                    request_id=request_id,
+                    status=event.get("status"),
+                    detail=event.get("detail") or {},
+                    content=event.get("content") or "",
+                    finish=event.get("finish"),
+                )
+            yield _moe_sse_chunk(request_id, "done", {}, finish="stop")
+        except Exception as exc:  # noqa: BLE001
+            yield _moe_sse_chunk(request_id, "error", {"message": str(exc)}, content=f"\nMoE 调用失败：{exc}", finish="stop")
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 _ADMIN_HTML = r"""<!DOCTYPE html>

@@ -18,6 +18,13 @@ _THEMES = {
         "button_start": "#2e7d32",
         "button_end": "#43a047",
     },
+    "livestock": {
+        "max_width": 800,
+        "background_tail": "#fff8e1",
+        "accent_rgb": "141,110,99",
+        "button_start": "#6d4c41",
+        "button_end": "#8d6e63",
+    },
 }
 
 

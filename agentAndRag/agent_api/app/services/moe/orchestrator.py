@@ -206,6 +206,8 @@ class MoEOrchestrator:
             status="routing",
             detail={
                 "weights": decision.weights,
+                "raw_weights": decision.raw_weights,
+                "scores": decision.scores,
                 "selected_experts": decision.selected_experts,
                 "emergency": decision.emergency,
                 "reason": decision.reason,
@@ -227,10 +229,14 @@ class MoEOrchestrator:
                 content=f"   {o['name_zh']}：置信度 {o['confidence']:.2f}，RAG 命中 {o['rag_hits']}{_tools_txt}\n",
                 status="expert_complete",
                 detail={
-                    "expert": o["expert"], "name_zh": o["name_zh"],
-                    "confidence": o["confidence"], "hits_count": o["rag_hits"],
+                    "expert": o["expert"],
+                    "name_zh": o["name_zh"],
+                    "weight": o.get("weight"),
+                    "confidence": o["confidence"],
+                    "hits_count": o["rag_hits"],
                     "best_score": o["rag_best_score"],
                     "tools_used": o.get("tools_used", []),
+                    "opinion": o,
                 },
             )
 

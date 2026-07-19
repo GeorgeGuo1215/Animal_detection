@@ -41,14 +41,24 @@ ENV/
 agentAndRag/RAG/data/
 agentAndRag/models/
 agentAndRag/1.1.0
+**/RAG/data/
 # Runtime logs, traces and local SQLite QA store
 agentAndRag/agent_api_logs/
+**/agent_api_logs/
 *.db
 # API keys loaded by the auth middleware (auto-generated on first run)
 **/keys.txt
+.env
 # Live/eval test reports
 agentAndRag/agent_api/tests/**/reports/
+# Local corpora / scanned books (too large for git)
+**/大熊猫/
+*.pdf
+# Editor / scratch
+.codex
+agentAndRag/RAG/Untitled
 
 # Vendored tooling clone (not part of this project)
 git-filter-repo/
 git-filter-repo
+*.docx

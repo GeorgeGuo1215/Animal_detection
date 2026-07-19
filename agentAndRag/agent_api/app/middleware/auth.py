@@ -55,7 +55,18 @@ def get_api_key_from_request(request: Request) -> str | None:
 
 
 # Paths that don't require authentication
-_PUBLIC_PATHS = {"/health", "/ready", "/docs", "/openapi.json", "/redoc", "/chat", "/admin", "/qa/feedback"}
+_PUBLIC_PATHS = {
+    "/health",
+    "/ready",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/chat",
+    "/chat-moe",
+    "/chat-moe/completions",
+    "/admin",
+    "/qa/feedback",
+}
 
 
 def _path_allows_anonymous(path: str) -> bool:

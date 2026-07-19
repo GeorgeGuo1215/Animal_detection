@@ -311,4 +311,6 @@ async def run_expert(
         "rag_hits": hits_count,
         "rag_best_score": round(float(best_score), 4),
         "tools_used": tools_used,
+        "plan_steps": tool_steps,
+        "tool_results": tool_results,
     }

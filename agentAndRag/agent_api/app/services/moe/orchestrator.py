@@ -29,14 +29,43 @@ _OUT_OF_SCOPE_TEXT = (
     "我是宠物健康助手，暂时无法回答。如果你有关于猫狗等宠物健康的问题，欢迎随时问我～"
 )
 
-_BLOCK_FALLBACK_TEXT = (
+_BLOCK_FALLBACK_TEXT_OWNER = (
     "出于安全考虑，我不能直接给出该建议。你描述的情况可能涉及较高风险，"
     "强烈建议尽快联系或前往专业兽医进行线下评估与处理。\n\n"
     "**免责声明**：以上内容仅供健康管理参考，不能替代执业兽医的诊断与治疗。"
 )
 
-# 兽医具体病例终答往往更长（病例整理 + 问题列表 + 方案）
-_VET_CONCRETE_CASE_MAX_TOKENS = 1500
+_BLOCK_FALLBACK_TEXT_VET = (
+    "出于安全边界考虑，当前草案触及不可自动放行的用药/处置红线，"
+    "不宜在此直接给出可执行方案。\n\n"
+    "请结合体格检查、实验室与影像结果，按院内急症流程再评估；"
+    "若涉及高风险药物，请核对物种特异性毒性、剂量与监测后再处方。\n\n"
+    "**说明**：本系统以 AI 助手身份提供临床参考，不能替代现场诊疗决策。"
+)
+
+# 最终融合答案默认至少 2500，避免病例长答被截断
+_FINAL_ANSWER_MAX_TOKENS = 2500
+
+
+def _block_fallback_text(user_role: str) -> str:
+    if user_role == "veterinarian":
+        return _BLOCK_FALLBACK_TEXT_VET
+    return _BLOCK_FALLBACK_TEXT_OWNER
+
+
+def _opinions_used_web(opinions: List[Dict[str, Any]]) -> bool:
+    for o in opinions or []:
+        for name in o.get("tools_used") or []:
+            if str(name).startswith("mcp.web_search"):
+                return True
+        for tr in o.get("tool_results") or []:
+            if str((tr or {}).get("tool_name") or "").startswith("mcp.web_search"):
+                return True
+    return False
+
+
+# Backward-compatible alias (pet-owner copy)
+_BLOCK_FALLBACK_TEXT = _BLOCK_FALLBACK_TEXT_OWNER
 
 
 @dataclass
@@ -44,7 +73,7 @@ class OrchestratorConfig:
     router: RouterConfig = field(default_factory=RouterConfig)
     rag_top_k: int = 5
     temperature: float = 0.3
-    max_tokens: int = 900
+    max_tokens: int = 900 # 此处配置的900会被_aggregator_max_tokens方法覆盖
     user_role: str = "pet_owner"
     device: Optional[str] = None
     animal_id: Optional[str] = None
@@ -83,9 +112,8 @@ class MoEOrchestrator:
         return (profile.get("species") or None), species_label(profile), (breed_s or None)
 
     def _aggregator_max_tokens(self, query: str) -> int:
-        if self.config.user_role == "veterinarian" and is_concrete_vet_case(query):
-            return max(int(self.config.max_tokens), _VET_CONCRETE_CASE_MAX_TOKENS)
-        return int(self.config.max_tokens)
+        # Floor final answer budget so long vet-case / owner answers are not truncated.
+        return max(int(self.config.max_tokens), _FINAL_ANSWER_MAX_TOKENS)
 
     async def _route(self, query: str, recorder: Optional[MoETrace]) -> RouterDecision:
         _, species_zh, breed = self._resolve_species()
@@ -121,6 +149,7 @@ class MoEOrchestrator:
                     species_en=species_en,
                     species_zh=species_zh,
                     breed=breed,
+                    user_role=self.config.user_role,
                     recorder=recorder,
                 )
             )
@@ -155,8 +184,16 @@ class MoEOrchestrator:
         system_context: str = "",
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> List[Dict[str, str]]:
-        base = build_solve_prompt(user_role=self.config.user_role, has_web_search=False, query=query)
-        concrete = self.config.user_role == "veterinarian" and is_concrete_vet_case(query)
+        is_vet = self.config.user_role == "veterinarian"
+        has_web = _opinions_used_web(opinions)
+        base = build_solve_prompt(
+            user_role=self.config.user_role, has_web_search=has_web, query=query
+        )
+        concrete = is_vet and is_concrete_vet_case(query)
+        role_line = (
+            f"- **当前对话角色**：`{self.config.user_role}`。"
+            "必须严格按该角色组织终答，不要把兽医会诊专业助手口吻与宠主教育口吻混用。\n"
+        )
         if concrete:
             structure_line = (
                 "- 当前用户意图为『整理病例』或『对病例做完整诊断』：按 "
@@ -165,17 +202,28 @@ class MoEOrchestrator:
                 "顺序分节（加粗文字，不用 Markdown 标题），面向医生；"
                 "用语简明，只用常规病历字段，不要写信号类口号标签；"
                 "**问题列表**条目必须是已明确的症状/异常指标（呕吐、腹泻、CRP升高等），"
-                "疾病名只放在各条下的鉴别诊断中，勿把「胰腺炎」等病名当问题标题；\n"
+                "疾病名只放在各条下的鉴别诊断中，勿把「胰腺炎」等病名当问题标题；"
+                "禁止『请立即就医/勿自行给人药/需线下兽医确认』等宠主话术；\n"
+            )
+        elif is_vet:
+            structure_line = (
+                "- 按用户实际问题组织答复，用如下常用结构即可（加粗文字，不用 Markdown 标题）："
+                "**结论** / **依据** / **临床风险与边界** / **建议行动**；"
+                "不要写『何时必须就医』分节；不要仅因叙述中含品种/症状就强行输出病例整理与 POMR 问题列表；"
+                "禁止宠主就医/人药口号；\n"
             )
         else:
             structure_line = (
-                "- 按用户实际问题组织答复，用如下常用结构即可（加粗文字，不用 Markdown 标题）："
+                "- 读者是宠物主：用通俗可执行语气改写专家意见（保留关键风险与品种提示），"
+                "结构用（加粗文字，不用 Markdown 标题）："
                 "**结论** / **依据** / **风险提示** / **建议行动** / **何时必须就医**；"
-                "不要仅因叙述中含品种/症状就强行输出病例整理与 POMR 问题列表；\n"
+                "急症或高风险时保留就医时机、勿自行使用人用药（如布洛芬）等安全提醒；"
+                "不要输出兽医病例整理/POMR 问题列表那套病历结构；\n"
             )
         agg = (
             "\n\n**多专家融合规范**\n"
             "下面是多位兽医专家针对该问题给出的加权意见（weight 越高越重要）。请你作为融合器：\n"
+            f"{role_line}"
             "- 按权重与各专家自评置信度综合，形成一致、连贯的最终答复；\n"
             "- 显式标注专家间的冲突点（若有），不要简单拼接；\n"
             f"{structure_line}"
@@ -184,8 +232,13 @@ class MoEOrchestrator:
         if decision.emergency:
             if concrete:
                 agg += (
-                    "- 当前疑似急症：在 **检查与治疗方案** 内的 **紧急处理** 子段写清立即处置，"
-                    "不要另起文首大标题抢戏。\n"
+                    "- 当前疑似急症：在 **检查与治疗方案** 内的 **紧急处理** 子段写清接诊/院内处置优先级，"
+                    "不要另起文首大标题抢戏，也不要写『请立即就医』口号。\n"
+                )
+            elif is_vet:
+                agg += (
+                    "- 当前疑似急症：突出优先处置与红旗征象、检查/监护要点，"
+                    "禁止文首『立即就医』口号。\n"
                 )
             else:
                 agg += "- 当前疑似急症：务必把『立即就医』放在最前并加粗强调。\n"
@@ -198,6 +251,7 @@ class MoEOrchestrator:
 
         payload = {
             "query": query,
+            "user_role": self.config.user_role,
             "router": {"weights": decision.weights, "emergency": decision.emergency},
             "expert_opinions": opinions,
             "critic_verdict": critic.verdict,
@@ -287,12 +341,13 @@ class MoEOrchestrator:
         )
 
         if critic.blocked:
+            block_text = _block_fallback_text(self.config.user_role)
             if recorder is not None:
                 recorder.blocked = True
-                recorder.final_answer = _BLOCK_FALLBACK_TEXT
+                recorder.final_answer = block_text
                 recorder.finalize()
             yield _event(content="\n**生成回答…**\n\n", status="generating")
-            yield _event(content=_BLOCK_FALLBACK_TEXT, status="streaming")
+            yield _event(content=block_text, status="streaming")
             return
 
         # 4) 流式融合生成
@@ -350,11 +405,12 @@ class MoEOrchestrator:
         critic = await self._critique(query, opinions, decision.emergency, recorder)
 
         if critic.blocked:
+            block_text = _block_fallback_text(self.config.user_role)
             if recorder is not None:
                 recorder.blocked = True
-                recorder.final_answer = _BLOCK_FALLBACK_TEXT
+                recorder.final_answer = block_text
                 recorder.finalize()
-            return _BLOCK_FALLBACK_TEXT, recorder
+            return block_text, recorder
 
         messages = self._build_synthesis_messages(
             query=query, opinions=opinions, critic=critic, decision=decision,

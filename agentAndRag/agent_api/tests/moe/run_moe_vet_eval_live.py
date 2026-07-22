@@ -79,6 +79,7 @@ _FLUTD = (
 CASES: List[Dict[str, Any]] = [
     {
         "id": "golden_vomit",
+        "user_role": "veterinarian",
         "title": "指令一：金毛呕吐+鸡骨头（整理和诊断）",
         "expect_concrete": True,
         "expect_sections": ["病例整理", "问题列表", "检查与治疗方案", "风险提示"],
@@ -99,6 +100,7 @@ CASES: List[Dict[str, Any]] = [
     },
     {
         "id": "flutd_organize",
+        "user_role": "veterinarian",
         "title": "指令二：英短排尿困难（标准病例格式）",
         "expect_concrete": True,
         "expect_sections": ["病例整理", "问题列表", "风险提示"],
@@ -117,11 +119,56 @@ CASES: List[Dict[str, Any]] = [
     },
     {
         "id": "bulldog",
+        "user_role": "veterinarian",
         "title": "附加：法斗剧烈运动（品种特异化）",
         "expect_concrete": False,
         "forbid_required_sections": True,
         "expect_keywords": ["短吻", "热", "运动", "呼吸"],
         "checklist_keys": ["brachy_keywords", "no_forced_triad"],
+        "question": (
+            "3岁法斗（法国斗牛犬）公犬，已绝育，体重12kg。"
+            "主人想每天带它剧烈跑步或追球1小时，最近热天遛弯就张口喘、不愿走。"
+            "从兽医角度评估运动建议与风险边界，并说明与普通中型犬的差异。"
+        ),
+    },
+    # --- 宠主对照：相同查询，验收通俗就医口吻，不套用兽医 POMR ---
+    {
+        "id": "golden_vomit_owner",
+        "user_role": "pet_owner",
+        "title": "对照：金毛呕吐+鸡骨头（宠主同问）",
+        "expect_owner_tone": True,
+        "forbid_required_sections": True,
+        "forbid_phrases": ["个体信号", "红旗信号"],
+        "checklist_keys": [
+            "owner_seek_care",
+            "owner_no_case_triad",
+            "differential",
+            "no_ai_jargon",
+        ],
+        "question": _GOLDEN,
+    },
+    {
+        "id": "flutd_organize_owner",
+        "user_role": "pet_owner",
+        "title": "对照：英短排尿困难（宠主同问）",
+        "expect_owner_tone": True,
+        "forbid_required_sections": True,
+        "forbid_phrases": ["个体信号", "红旗信号"],
+        "checklist_keys": [
+            "owner_seek_care",
+            "owner_no_case_triad",
+            "no_ai_jargon",
+        ],
+        "question": _FLUTD,
+    },
+    {
+        "id": "bulldog_owner",
+        "user_role": "pet_owner",
+        "title": "对照：法斗剧烈运动（宠主同问）",
+        "expect_owner_tone": True,
+        "forbid_required_sections": True,
+        "expect_keywords": ["短吻", "热", "运动", "呼吸"],
+        "checklist_keys": ["brachy_keywords", "owner_seek_care", "owner_no_case_triad"],
         "question": (
             "3岁法斗（法国斗牛犬）公犬，已绝育，体重12kg。"
             "主人想每天带它剧烈跑步或追球1小时，最近热天遛弯就张口喘、不愿走。"
@@ -202,6 +249,15 @@ def _eval_checklist(case: Dict[str, Any], answer: str) -> Dict[str, str]:
         elif key == "no_forced_triad":
             forced = all(s in a for s in ("病例整理", "问题列表", "检查与治疗方案"))
             out[key] = "有" if not forced else "无"  # 有 = 满足「未强制三件套」
+        elif key == "owner_seek_care":
+            out[key] = (
+                "有"
+                if _has_any(a, ["就医", "兽医", "医院", "何时必须就医", "立即就医", "尽快就医"])
+                else "无"
+            )
+        elif key == "owner_no_case_triad":
+            forced = all(s in a for s in ("病例整理", "问题列表", "检查与治疗方案"))
+            out[key] = "有" if not forced else "无"
         else:
             out[key] = "无"
     return out
@@ -210,11 +266,13 @@ def _eval_checklist(case: Dict[str, Any], answer: str) -> Dict[str, str]:
 def _style_checks(case: Dict[str, Any], answer: str) -> List[str]:
     issues: List[str] = []
     q = case["question"]
+    role = case.get("user_role") or "veterinarian"
     concrete = is_concrete_vet_case(q)
-    if case.get("expect_concrete") and not concrete:
-        issues.append("启发式未识别为病例工作流意图（与 expect_concrete 不符）")
-    if case.get("expect_concrete") is False and concrete:
-        issues.append("启发式误判为病例工作流意图")
+    if role == "veterinarian":
+        if case.get("expect_concrete") and not concrete:
+            issues.append("启发式未识别为病例工作流意图（与 expect_concrete 不符）")
+        if case.get("expect_concrete") is False and concrete:
+            issues.append("启发式误判为病例工作流意图")
     for sec in case.get("expect_sections") or []:
         if sec not in answer:
             issues.append(f"终答缺少分节关键词: {sec}")
@@ -227,6 +285,9 @@ def _style_checks(case: Dict[str, Any], answer: str) -> List[str]:
     if case.get("forbid_required_sections"):
         if all(s in answer for s in ("病例整理", "问题列表", "检查与治疗方案")):
             issues.append("非诊断/整理意图不应强制完整病例三件套")
+    if case.get("expect_owner_tone"):
+        if not _has_any(answer or "", ["就医", "兽医", "医院", "何时必须就医"]):
+            issues.append("宠主终答缺少就医/兽医相关提醒")
     kws = case.get("expect_keywords") or []
     if kws and not any(k in answer for k in kws):
         issues.append(f"终答未命中任一特异化关键词: {kws}")
@@ -256,6 +317,7 @@ def _chat_stream(
     question: str,
     max_tokens: int,
     timeout_s: float,
+    user_role: str = "veterinarian",
 ) -> Tuple[str, List[Dict[str, Any]]]:
     url = base_url.rstrip("/") + "/v1/chat/completions"
     body = {
@@ -263,7 +325,7 @@ def _chat_stream(
         "stream": True,
         "temperature": 0.3,
         "max_tokens": max_tokens,
-        "user_role": "veterinarian",
+        "user_role": user_role,
         "messages": [{"role": "user", "content": question}],
     }
     headers = {
@@ -320,7 +382,7 @@ def _render_report(
     lines.append(f"- case_id: {case['id']}")
     lines.append(f"- title: {case['title']}")
     lines.append(f"- base_url: {base_url}")
-    lines.append("- user_role: veterinarian")
+    lines.append(f"- user_role: {case.get('user_role') or 'veterinarian'}")
     lines.append(f"- concrete_gate: {is_concrete_vet_case(question)}")
     lines.append("")
     lines.append("## 评测清单勾选")
@@ -355,7 +417,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-url", default=os.getenv("AGENT_BASE_URL") or "http://127.0.0.1:8146")
     p.add_argument("--api-key", default=None)
     p.add_argument("--case", action="append")
-    p.add_argument("--max-tokens", type=int, default=1500)
+    p.add_argument("--max-tokens", type=int, default=2500)
     p.add_argument("--timeout", type=float, default=420.0)
     p.add_argument("--out-dir", default=None)
     p.add_argument(
@@ -518,6 +580,7 @@ def main() -> None:
                 question=q,
                 max_tokens=args.max_tokens,
                 timeout_s=args.timeout,
+                user_role=str(case.get("user_role") or "veterinarian"),
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[FAIL] 请求异常: {exc}")

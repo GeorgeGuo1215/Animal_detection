@@ -91,9 +91,28 @@ def test_build_solve_prompt_diagnosis_has_case_structure():
     assert "紧急处理" in prompt
     assert "风险提示" in prompt
     assert "器官系统" in prompt
+    assert "禁止宠主话术" in prompt
+    assert "接诊/院内处置优先级" in prompt
+    assert "需线下执业兽医确认" not in prompt or "不要写『勿自行给人药』『需线下执业兽医确认』" in prompt
+    assert "尽快就诊" not in prompt
     assert "个体信号" not in prompt
     assert "红旗信号" not in prompt
     assert "条目化归纳" not in prompt
+
+
+def test_vet_base_prompt_forbids_owner_tone():
+    prompt = build_solve_prompt(user_role="veterinarian", query="犬急性胰腺炎鉴别要点")
+    assert "禁止宠主话术" in prompt
+    assert "AI 临床助手" in prompt or "AI 助手" in prompt
+    assert "请立即就医" in prompt  # listed as forbidden phrase
+    assert "布洛芬" in prompt
+    assert "不要自称『同事』" in prompt or "不要自称同事" in prompt or "终答不要自称『同事』" in prompt
+
+
+def test_owner_prompt_still_suggests_vet():
+    prompt = build_solve_prompt(user_role="pet_owner", query="狗吐了怎么办")
+    assert "建议咨询兽医" in prompt
+    assert "禁止宠主话术" not in prompt
 
 
 def test_build_solve_prompt_exercise_no_forced_case_structure():
@@ -140,8 +159,64 @@ def test_aggregator_synthesis_structure_for_diagnosis():
     assert "检查与治疗方案" in sys
     assert "风险提示" in sys
     assert "基本信息" in sys
+    assert "禁止『请立即就医" in sys or "宠主话术" in sys
     assert "个体信号" not in sys
     assert "红旗信号" not in sys
+
+
+def test_aggregator_vet_non_case_drops_when_to_seek_care():
+    orch = MoEOrchestrator(config=OrchestratorConfig(user_role="veterinarian"))
+    decision = RouterDecision(
+        scores={"clinical": 8},
+        raw_weights={"clinical": 1.0},
+        weights={"clinical": 1.0},
+        selected_experts=["clinical"],
+        emergency=True,
+        out_of_scope=False,
+        reason="test",
+    )
+    msgs = orch._build_synthesis_messages(
+        query=_BULLDOG_EXERCISE,
+        opinions=[{
+            "expert": "clinical", "name_zh": "兽医临床专家", "weight": 1.0,
+            "conclusion": "限制剧烈运动", "evidence": [], "risks": ["热射病"], "confidence": 0.8,
+            "tools_used": ["rag.search", "mcp.web_search.web_search"],
+        }],
+        critic=CriticResult(verdict="pass", issues=[], constraints=[], reason="ok"),
+        decision=decision,
+    )
+    sys = msgs[0]["content"]
+    assert "临床风险与边界" in sys
+    assert "**何时必须就医**" not in sys
+    assert "禁止文首『立即就医』" in sys
+    assert "网络搜索结果引用规范" in sys or "web_search" in sys
+
+
+def test_aggregator_owner_keeps_when_to_seek_care():
+    orch = MoEOrchestrator(config=OrchestratorConfig(user_role="pet_owner"))
+    decision = RouterDecision(
+        scores={"clinical": 8},
+        raw_weights={"clinical": 1.0},
+        weights={"clinical": 1.0},
+        selected_experts=["clinical"],
+        emergency=True,
+        out_of_scope=False,
+        reason="test",
+    )
+    msgs = orch._build_synthesis_messages(
+        query="狗吐了怎么办",
+        opinions=[{
+            "expert": "clinical", "name_zh": "兽医临床专家", "weight": 1.0,
+            "conclusion": "观察", "evidence": [], "risks": [], "confidence": 0.5,
+        }],
+        critic=CriticResult(verdict="pass", issues=[], constraints=[], reason="ok"),
+        decision=decision,
+    )
+    sys = msgs[0]["content"]
+    assert "何时必须就医" in sys
+    assert "立即就医" in sys
+    assert "当前对话角色" in sys
+    assert '"user_role": "pet_owner"' in msgs[1]["content"]
 
 
 def test_aggregator_exercise_does_not_force_case_sections():
@@ -169,8 +244,10 @@ def test_aggregator_exercise_does_not_force_case_sections():
     assert '"concrete_vet_case": false' in msgs[1]["content"]
 
 
-def test_aggregator_max_tokens_bumped_only_for_workup():
+def test_aggregator_max_tokens_floored_to_2500():
     orch = MoEOrchestrator(config=OrchestratorConfig(user_role="veterinarian", max_tokens=900))
-    assert orch._aggregator_max_tokens(_FLUTD_DIAGNOSIS) == 1500
-    assert orch._aggregator_max_tokens(_BULLDOG_EXERCISE) == 900
-    assert orch._aggregator_max_tokens("猫尿血怎么办") == 900
+    assert orch._aggregator_max_tokens(_FLUTD_DIAGNOSIS) == 2500
+    assert orch._aggregator_max_tokens(_BULLDOG_EXERCISE) == 2500
+    assert orch._aggregator_max_tokens("猫尿血怎么办") == 2500
+    orch2 = MoEOrchestrator(config=OrchestratorConfig(user_role="pet_owner", max_tokens=3000))
+    assert orch2._aggregator_max_tokens("狗吐了") == 3000

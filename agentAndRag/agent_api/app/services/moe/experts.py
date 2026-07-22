@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from ...context.request_context import ANIMAL_REQUIRED_TOOLS, get_request_animal_id
 from ...llm.llm_client import AsyncOpenAIClient, extract_text
 from ...tools.tool_registry import ToolRegistry
-from ..plan_and_solve import AsyncPlanAndSolveAgent, execute_tool_steps, _safe_json_loads
+from ..plan_and_solve import AsyncPlanAndSolveAgent, ensure_rag_and_web_tool_steps, execute_tool_steps, _safe_json_loads
 from .trace import MoETrace, extract_usage
 
 
@@ -99,15 +99,28 @@ _OUTPUT_CONTRACT = (
     "confidence 为 0~1 的自评置信度：检索证据充分且与问题高度相关时高，证据不足时低。"
 )
 
+_AUDIENCE_OWNER = (
+    "【读者身份】当前提问者是宠物主（pet_owner）。"
+    "用通俗可执行语气写 conclusion/risks；可保留就医时机与安全提醒（如勿自行使用人用止痛药）。"
+    "本条优先于上方 persona 中『面向兽医用户 / 勿写就医口号』的表述。"
+)
+
+_AUDIENCE_VET = (
+    "【读者身份】当前提问者是执业兽医（veterinarian）。"
+    "你是 AI 临床助手：用专业、结构化语气写 conclusion/risks；急症写处置与检查优先级，"
+    "不要写『请立即就医/线下就诊』等宠主话术，也不要自称『同事』。"
+)
+
 
 EXPERTS: Dict[str, ExpertConfig] = {
     "clinical": ExpertConfig(
         key="clinical",
         name_zh="兽医临床专家",
         persona=(
-            "你是一位经验丰富的兽医临床专家，负责症状分诊、疾病鉴别与就医建议。"
+            "你是一位经验丰富的兽医临床专家，为执业兽医用户提供 AI 助手式临床参考："
+            "症状评估、鉴别诊断排序与检查/处置优先级。"
             "你基于循证兽医学谨慎推断，区分『直接证据』与『临床经验推断』，"
-            "不做确定性诊断，必要时建议线下就医与进一步检查。"
+            "避免绝对确诊措辞；急症写清处置与监护要点，不要写『请线下就医』等宠主话术，不要自称同事。"
         ),
         allowed_tools=[
             "rag.search",
@@ -141,8 +154,8 @@ EXPERTS: Dict[str, ExpertConfig] = {
         name_zh="兽医药剂师",
         persona=(
             "你是一位兽医药剂师，负责用药安全、剂量、相互作用与禁忌。"
-            "你尤其关注犬猫物种特异性毒性，对剂量与禁忌保持高度谨慎，"
-            "对任何不确定的用药一律给出警示并建议遵医嘱。"
+            "你尤其关注犬猫物种特异性毒性，对剂量与禁忌保持高度谨慎；"
+            "面向兽医用户写处方边界与监测要点，不要写『勿自行给人药/请遵医嘱就医』等宠主口号，不要自称同事。"
         ),
         allowed_tools=["rag.search", "mcp.web_search.web_search"],
         rag_query_hint="drug dosage contraindication toxicity interaction",
@@ -152,8 +165,9 @@ EXPERTS: Dict[str, ExpertConfig] = {
         key="behavior",
         name_zh="行为安抚老师",
         persona=(
-            "你是一位动物行为与安抚专家，负责焦虑/应激识别、行为矫正与宠主沟通。"
-            "你用温和、可执行的方式给出训练与安抚建议，并照顾宠主的情绪与依从性。"
+            "你是一位动物行为与安抚专家，负责焦虑/应激识别、行为矫正与医患沟通要点。"
+            "给出可执行的训练与安抚建议；若需向宠主传达，写成『可告知宠主…』的沟通建议，"
+            "不要直接用『请立即就医』等对宠主喊话的口吻作为结论。"
         ),
         allowed_tools=["rag.search", "mcp.web_search.web_search"],
         rag_query_hint="animal behavior anxiety stress training",
@@ -200,6 +214,7 @@ async def run_expert(
     species_en: Optional[str] = None,
     species_zh: Optional[str] = None,
     breed: Optional[str] = None,
+    user_role: str = "pet_owner",
     recorder: Optional[MoETrace] = None,
 ) -> Dict[str, Any]:
     """单专家会诊：在授权工具子集内自主规划并调用工具（含 SQL/vitals/MCP），
@@ -242,6 +257,13 @@ async def run_expert(
     # 1c) 仅当 plan 为空时保底 rag.search；规划器已选其他工具时不再强插，避免挤占步数。
     if not tool_steps:
         tool_steps = [{"type": "tool", "tool_name": "rag.search", "arguments": {}}]
+    # 医学类：可见 rag + web 时同轮补齐二者，便于综合。
+    tool_steps = ensure_rag_and_web_tool_steps(
+        tool_steps,
+        visible_tools=visible_tools,
+        query=query,
+        rag_query=rag_query,
+    )
     for s in tool_steps:
         if s.get("tool_name") == "rag.search":
             args = s.get("arguments")
@@ -254,6 +276,13 @@ async def run_expert(
             # Force expert-scoped knowledge categories (do not trust planner).
             if expert.rag_categories:
                 args["category"] = list(expert.rag_categories)
+            s["arguments"] = args
+        elif s.get("tool_name") == "mcp.web_search.web_search":
+            args = s.get("arguments")
+            if not isinstance(args, dict):
+                args = {}
+            args.setdefault("query", query)
+            args.setdefault("max_results", 5)
             s["arguments"] = args
 
     # 1d) 执行（封顶步数）
@@ -306,8 +335,16 @@ async def run_expert(
     evidence = "\n\n".join(p for p in evidence_parts if p) or "（无检索结果）"
 
     # 2) 结构化意见 LLM 调用
-    sys_prompt = f"{expert.persona}\n{_SPECIES_GUARD}\n{_SPECIES_BREED_GUARD}\n\n{_OUTPUT_CONTRACT}"
-    expert_payload = {"user_question": query, "retrieved_evidence": evidence}
+    audience = _AUDIENCE_VET if user_role == "veterinarian" else _AUDIENCE_OWNER
+    sys_prompt = (
+        f"{expert.persona}\n{_SPECIES_GUARD}\n{_SPECIES_BREED_GUARD}\n"
+        f"{audience}\n\n{_OUTPUT_CONTRACT}"
+    )
+    expert_payload = {
+        "user_question": query,
+        "user_role": user_role,
+        "retrieved_evidence": evidence,
+    }
     if species_zh:
         expert_payload["species"] = species_zh
     if breed:

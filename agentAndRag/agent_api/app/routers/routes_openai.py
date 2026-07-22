@@ -35,7 +35,12 @@ from ..schemas.openai_schemas import (
     UsageInfo,
 )
 from ..services.moe import MoEOrchestrator, OrchestratorConfig, RouterConfig
-from ..services.plan_and_solve import AsyncPlanAndSolveAgent, _safe_json_loads, build_solve_prompt
+from ..services.plan_and_solve import (
+    AsyncPlanAndSolveAgent,
+    _safe_json_loads,
+    build_solve_prompt,
+    ensure_rag_and_web_tool_steps,
+)
 from ..tools.tool_registry import get_registry
 
 
@@ -148,7 +153,8 @@ def _make_decide_prompt(
             "你是一个智能 Agent。根据用户问题和已有的工具调用结果，决定是否需要继续调用工具获取更多信息，还是已经可以生成最终回答。\n"
             "如果信息不足，选择调用工具；如果信息足够，选择生成最终回答。\n"
             "工具选择指南：\n"
-            "- 健康/医学知识问题 → rag.search\n"
+            "- 健康/医学/临床类问题：若同时有 rag.search 与 mcp.web_search.web_search，"
+            "应同轮调用二者并综合（rag 英文 query；web 中文 query）\n"
             "- 当前请求带 animal_id 且要查该宠物的日报 daily_reports → sql.search（仅该表）\n"
             "- 实时网络信息 / 产品信息 / 价格线索 → mcp.web_search.web_search\n"
             "- 产品成分安全性检查 → mcp.web_search.ingredient_check\n"
@@ -610,6 +616,25 @@ async def _stream_plan_and_solve(
         elif step.get("type") == "final":
             break
 
+    # Medical queries: pair rag.search + web_search when both are allowed.
+    _paired = ensure_rag_and_web_tool_steps(
+        [{"type": "tool", "tool_name": ts["tool_name"], "arguments": ts["arguments"]} for ts in tool_steps],
+        visible_tools=list(allowed) if allowed is not None else [t.name for t in reg.list_tools()],
+        query=query,
+    )
+    if len(_paired) != len(tool_steps) or {s.get("tool_name") for s in _paired} != {t["tool_name"] for t in tool_steps}:
+        tool_steps = []
+        for i, s in enumerate(_paired):
+            name = str(s.get("tool_name") or "")
+            if not name or (allowed is not None and name not in allowed):
+                continue
+            args = s.get("arguments") or {}
+            if not isinstance(args, dict):
+                args = {}
+            if name == "rag.search":
+                args = agent._force_rag_search_defaults(args)
+            tool_steps.append({"step": i, "tool_name": name, "arguments": args})
+
     if len(tool_steps) >= 2:
         yield make_chunk(
             content=f"\n**Parallel execution**: {', '.join(s['tool_name'] for s in tool_steps)}\n",
@@ -878,7 +903,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     system_context=system_context,
                     conversation_history=conversation_history,
                     temperature=req.temperature or 0.3,
-                    max_tokens=req.max_tokens or 900,
+                    max_tokens=req.max_tokens or 2500,
                     user_role=user_role,
                 )
             elif use_multi_turn:
@@ -980,7 +1005,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     config=OrchestratorConfig(
                         router=RouterConfig(),
                         temperature=req.temperature or 0.3,
-                        max_tokens=req.max_tokens or 900,
+                        max_tokens=req.max_tokens or 2500,
                         user_role=user_role,
                     ),
                 )

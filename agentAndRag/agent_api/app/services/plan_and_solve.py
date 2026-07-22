@@ -54,7 +54,7 @@ _VET_EVIDENCE_LAYERING_INSTRUCTION = (
 
 _VET_CONCRETE_CASE_INSTRUCTION = (
     "\n\n**兽医病例工作流答风（用户明确要求病例整理，或要求对病例做完整诊断）**\n"
-    "仅在此类意图下启用。面向执业兽医，用语简明清晰，像病历与会诊记录，不要写 AI 套话。\n"
+    "仅在此类意图下启用。你是面向执业兽医的 AI 助手，用语简明清晰，像病历与诊疗记录，不要写 AI 套话，也不要自称『同事』。\n"
     "禁止使用难懂或翻译腔用词与口号式标签；病例字段只用「基本信息、主诉、现病史、既往史」等常规病历用语，"
     "不要写「信号」类标签或「痛点、闭环、赋能」等套话。\n"
     "用**加粗文字**分节（禁止 Markdown 标题 # ## ###），按下列顺序输出，不要增删分节名：\n"
@@ -75,15 +75,16 @@ _VET_CONCRETE_CASE_INSTRUCTION = (
     "   优先按器官系统归类；材料里没有的体征或检验值一律不要编造。\n"
     "3. **检查与治疗方案**（若用户只要『整理病例/病例格式』可写得更短，但仍建议保留鉴别后的下一步要点）\n"
     "   本节内部严格按顺序：\n"
-    "   (1) **紧急处理**：先判断是否急症。若是，先写立即需做的处置"
-    "（如禁食禁水、尽快就诊、路上注意点）；"
-    "若不是急症，用一两句说明「目前不像需要立刻急诊，可按下列计划安排」，再往下写。\n"
+    "   (1) **紧急处理**：先判断是否急症。若是，写接诊/院内处置优先级"
+    "（如 NPO、补液、镇痛、影像与实验室优先次序、监护要点）；"
+    "若不是急症，用一两句说明『目前不像需要立刻急诊处置，可按下列计划安排』，再往下写。"
+    "面向兽医用户：不要写『请立即就医/带去医院/路上注意点』等宠主话术。\n"
     "   (2) **检查方案**：按优先级列出体格检查与辅助检查。\n"
-    "   (3) **治疗方案**：原则、用药边界、复诊指征；证据分层"
+    "   (3) **治疗方案**：原则、用药与监测边界、复诊/再评估指征；证据分层"
     "（先写临床直接证据，再写经验推断并标注）。\n"
     "4. **风险提示**（必须放在全文最后，在参考文献之前）\n"
-    "   用短列表提醒：主要风险/恶化征象、勿自行用药禁忌、需线下执业兽医确认等。"
-    "语气专业克制，不要口号化。\n"
+    "   用短列表写临床风险边界：主要并发症、恶化/红旗征象、关键用药的物种毒性与处方边界、监测要点。"
+    "不要写『勿自行给人药』『需线下执业兽医确认』『请立即就医』等宠主口吻。语气克制，像诊疗记录。\n"
     "若用户只是就某个具体问题征求意见（如运动建议、用药咨询、风险边界），"
     "**不要**强行套用本结构，按问题本身作答即可。\n"
 )
@@ -153,6 +154,56 @@ def _is_medical_query(query: str) -> bool:
     return bool(_CONDITION_SIGNAL_RE.search(query or ""))
 
 
+_WEB_SEARCH_TOOL = "mcp.web_search.web_search"
+_VITALS_SQL_ONLY = frozenset({"vitals.summary", "sql.search"})
+
+
+def ensure_rag_and_web_tool_steps(
+    tool_steps: List[Dict[str, Any]],
+    *,
+    visible_tools: List[str],
+    query: str,
+    rag_query: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """For medical queries, ensure both rag.search and web_search are planned when available.
+
+    Skips when either tool is unavailable, query is non-medical, or the plan is
+    purely vitals/sql (personal-data path). Does not truncate; caller may cap steps.
+    """
+    visible = set(visible_tools or [])
+    if "rag.search" not in visible or _WEB_SEARCH_TOOL not in visible:
+        return list(tool_steps or [])
+    if not _is_medical_query(query):
+        return list(tool_steps or [])
+
+    steps = [s for s in (tool_steps or []) if isinstance(s, dict)]
+    names = {str(s.get("tool_name") or "") for s in steps}
+    if names and names <= _VITALS_SQL_ONLY:
+        return steps
+
+    out = list(steps)
+    if "rag.search" not in names:
+        out.insert(
+            0,
+            {
+                "type": "tool",
+                "tool_name": "rag.search",
+                "arguments": {"query": (rag_query or query)},
+                "note": "paired with web_search for medical synthesis",
+            },
+        )
+    if _WEB_SEARCH_TOOL not in names:
+        out.append(
+            {
+                "type": "tool",
+                "tool_name": _WEB_SEARCH_TOOL,
+                "arguments": {"query": query, "max_results": 5},
+                "note": "paired with rag.search for medical synthesis",
+            }
+        )
+    return out
+
+
 def has_concrete_case_narrative(query: str) -> bool:
     """True when text looks like a concrete pet + condition narrative (not intent)."""
     text = (query or "").strip()
@@ -186,15 +237,19 @@ def build_solve_prompt(
 
     if user_role == "veterinarian":
         prompt = (
-            f"你是一位经验丰富的兽医临床顾问和学术助手。今天是 {today}。\n"
+            f"你是面向执业兽医的 AI 临床助手（不是兽医同事、也不扮演真人医生）。今天是 {today}。\n"
             "你拥有以下能力：知识库检索、网络搜索与成分分析、营养与运动计划制定。\n\n"
             "回答要求：\n"
-            "- 使用专业兽医学术中文，术语准确，逻辑严谨\n"
+            "- 使用专业兽医学术中文，术语准确，逻辑严谨；以 AI 助手身份提供结构化临床参考\n"
             "- 回答需结构化呈现，用**加粗文字**作为分节标记，配合列表和段落组织内容\n"
             "- 禁止使用 Markdown 标题语法（# ## ### 等），分节一律用加粗文字代替\n"
             "- 引用具体来源（书名、页码、文献），不可编造\n"
             "- 如果证据不足，明确说明当前知识库尚无定论，建议查阅更多文献或结合临床评估\n"
             "- 尽可能给出药物剂量范围、实验室指标参考值、鉴别诊断等专业信息\n"
+            "- 急症写处置优先级、检查与监护要点；用药写物种毒性、相互作用与处方/监测边界\n"
+            "- **禁止宠主话术**：不要写『请立即就医』『带去医院』『尽快线下就诊』"
+            "『勿自行给人药/布洛芬』『需线下执业兽医确认』『强烈建议联系兽医』等面向宠主的提醒\n"
+            "- 终答不要自称『同事』或『作为您的同事』；保持 AI 助手专业口吻\n"
             "- 如果工具返回 INSUFFICIENT_DATA，请明确告知需补充更多检查结果或病史\n"
             "- 如果工具返回 FEEDING_INQUIRY_NEEDED，请主动询问近期饮食与给药情况\n"
             "- 如果工具返回了 sql.search 的表格数据，只使用其中出现的字段与数值，不要编造行内不存在的数据\n"
@@ -318,10 +373,12 @@ class PlanAndSolveAgent:
         sys = (
             f"你是一个严谨的 AI Agent 规划器，采用 Plan-and-Solve。今天是 {date.today().isoformat()}。"
             "你必须输出严格 JSON，不要输出任何额外文字。"
-            "你的目标是：用尽量少的步骤解决用户问题。"
-            "工具选择：教科书/医学知识优选用 rag.search（query 英语）；"
-            "网络时效/产品信息用 web_search（query 中文）；"
-            "体征/日报类问题可优先 vitals.summary 或 sql.search，不必强行附加 rag.search。"
+            "你的目标是：用尽量少的步骤解决用户问题。\n"
+            "工具选择：\n"
+            "- 健康/医学/临床类问题：若 available_tools 同时含 rag.search 与 mcp.web_search.web_search，"
+            "**应同计划调用二者**（rag.search 用英语 query；web_search 用中文 query），再综合结果；\n"
+            "- 纯体征/日报类可优先 vitals.summary 或 sql.search，不必强行附加 rag/web；\n"
+            "- 产品信息/价格线索可侧重 web_search；成分安全性用 ingredient_check。\n"
             "若上下文中提供了当前宠物的 animal_id，可用 sql.search 只读查询表 daily_reports（日报）；"
             "无 animal_id 时不要规划 sql.search。"
         )
@@ -503,10 +560,12 @@ class AsyncPlanAndSolveAgent:
             "凡涉及“我家这只宠物”的具体状况，应优先用 vitals.summary 获取其真实心率/呼吸/体温，"
             "或用 sql.search 查该宠物的日报/档案，不要只凭通用知识作答。\n"
             "工具选择指南：\n"
-            "- 健康/医学知识查询 → rag.search (英文 query；知识类优选，非必须每问都调)\n"
+            "- 健康/医学/临床类问题：若同时有 rag.search 与 mcp.web_search.web_search，"
+            "**应同计划调用二者并综合**（rag.search 英文 query；web_search 中文 query）；"
+            "知识类优选，但医学问题不要只调其中一个\n"
             "- 当前请求已带 animal_id 且需查该宠物的**日报**结构化数据 → sql.search（仅表 daily_reports；"
             "参数含 database、table='daily_reports'、可选 columns/where/order_by/limit；服务端会强制按 animal_id 过滤）\n"
-            "- 实时体征（HR/RR/体温）→ vitals.summary；此类问题可优先体征工具，不必强行附加 rag.search\n"
+            "- 实时体征（HR/RR/体温）→ vitals.summary；纯体征/日报问题可优先体征工具，不必强行附加 rag/web\n"
             "- 实时网络信息 / 产品信息 / 价格线索 → mcp.web_search.web_search\n"
             "- 产品成分安全性 → mcp.web_search.ingredient_check\n"
             "- 喂食量/热量计算 → mcp.nutritional_planner.calculate_meal_plan\n"

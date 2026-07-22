@@ -152,6 +152,37 @@ def _run_rag_warmup() -> None:
             rerank_model=rerank_model,
         )
 
+        # Preload dense vectors for MoE expert category sub-indexes (BM25 built lazily on first use).
+        cat_warm: list[dict] = []
+        warm_cats = os.getenv("AGENT_WARMUP_CATEGORIES", "1") == "1"
+        if warm_cats:
+            try:
+                from RAG.simple_rag.category_index import (
+                    expert_category_warmup_ids,
+                    resolve_category_index_dirs,
+                )
+
+                for cid in expert_category_warmup_ids():
+                    dirs = resolve_category_index_dirs(repo_root=repo_root, category=cid)
+                    for d in dirs:
+                        if not d.exists():
+                            continue
+                        try:
+                            st = warmup_rag_cache(
+                                index_dir=d,
+                                embedding_model=embedding_model,
+                                device=device,
+                                enable_bm25=False,
+                                enable_reranker=False,
+                                rerank_model=rerank_model,
+                            )
+                            if int(st.get("index_size") or 0) > 0:
+                                cat_warm.append({"category": cid, "index_size": st.get("index_size")})
+                        except Exception as cat_exc:  # noqa: BLE001
+                            print(f"[startup] category warmup skip {cid}: {cat_exc}")
+            except Exception as cat_outer:  # noqa: BLE001
+                print(f"[startup] category warmup unavailable: {cat_outer}")
+
         actual_device = device or "cpu"
         try:
             import torch
@@ -166,7 +197,13 @@ def _run_rag_warmup() -> None:
         print(f"[startup] Reranker: {rerank_model if enable_reranker else 'disabled'}")
         print(f"[startup] BM25: {'enabled' if enable_bm25 else 'disabled'}")
         print(f"[startup] Index: {stats['index_size']} chunks")
-        _WARMUP_INFO = {"status": "ok", "index_size": stats.get("index_size")}
+        if cat_warm:
+            print(f"[startup] Category indexes warmed: {len(cat_warm)}")
+        _WARMUP_INFO = {
+            "status": "ok",
+            "index_size": stats.get("index_size"),
+            "category_indexes": len(cat_warm),
+        }
     except Exception as exc:  # noqa: BLE001
         print("[startup] RAG warmup failed; continuing without preloaded cache.")
         print(f"[startup] Warmup error: {exc}")

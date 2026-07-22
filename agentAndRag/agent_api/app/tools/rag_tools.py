@@ -4,11 +4,12 @@ import hashlib
 import os
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 import threading
 
 _RAG_DEVICE: Optional[str] = os.getenv("AGENT_WARMUP_DEVICE") or None
 
+from RAG.simple_rag.category_index import resolve_category_index_dirs
 from RAG.simple_rag.config import RagConfig, default_config
 from RAG.simple_rag.context_utils import build_neighbor_contexts, build_source_index
 from RAG.simple_rag.embeddings import Embedder
@@ -197,11 +198,113 @@ def _build_cached_multiroute(
     return MultiRouteRetriever(retrievers=[("dense", dense), ("bm25", bm25)], rewriter=rewriter, top_k_per_route=20)
 
 
+def _hit_from_meta(meta: dict, score: float, *, category: Optional[str], index_dir: Path) -> Dict[str, Any]:
+    return {
+        "score": float(score),
+        "source_path": meta.get("source_path"),
+        "chunk_index": meta.get("chunk_index"),
+        "n_words": meta.get("n_words"),
+        "text": meta.get("text"),
+        "chunk_id": meta.get("chunk_id"),
+        "category": category,
+        "_index_dir": str(index_dir),
+    }
+
+
+def _retrieve_from_index(
+    *,
+    index_dir: Path,
+    query: str,
+    retrieve_k: int,
+    embedding_model: str,
+    device: Optional[str],
+    multi_route: bool,
+    rewrite: str,
+    rewrite_base_url: Optional[str],
+    rewrite_api_key: Optional[str],
+    rewrite_model: Optional[str],
+    rewrite_max_out: int,
+    rewrite_timeout_s: float,
+    category: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    if not index_dir.exists():
+        return []
+    # Empty placeholder stores: still loadable, size==0 → no hits
+    try:
+        st = _get_store(index_dir)
+    except Exception:  # noqa: BLE001
+        return []
+    if st.size == 0:
+        return []
+
+    if not multi_route:
+        em = _get_embedder(embedding_model, device)
+        q_emb = _embed_query_cached(em, query, embedding_model)
+        raw_hits = st.search(q_emb, top_k=retrieve_k)
+        return [_hit_from_meta(meta, score, category=category, index_dir=index_dir) for meta, score in raw_hits]
+
+    mr = _build_cached_multiroute(
+        index_dir=index_dir,
+        embedding_model=embedding_model,
+        device=device,
+        rewrite=rewrite,
+        rewrite_base_url=rewrite_base_url,
+        rewrite_api_key=rewrite_api_key,
+        rewrite_model=rewrite_model,
+        rewrite_max_out=int(rewrite_max_out),
+        rewrite_timeout_s=float(rewrite_timeout_s),
+    )
+    return [
+        _hit_from_meta(h.meta, h.score, category=category, index_dir=index_dir)
+        for h in mr.retrieve(query, top_k=retrieve_k)
+    ]
+
+
+def _merge_hits_by_score(hits: List[Dict[str, Any]], *, top_k: int) -> List[Dict[str, Any]]:
+    """Deduplicate by chunk_id (keep best score) then take top_k."""
+    best: Dict[str, Dict[str, Any]] = {}
+    orphans: List[Dict[str, Any]] = []
+    for h in hits:
+        cid = h.get("chunk_id")
+        if not isinstance(cid, str) or not cid:
+            orphans.append(h)
+            continue
+        prev = best.get(cid)
+        if prev is None or float(h.get("score") or 0) > float(prev.get("score") or 0):
+            best[cid] = h
+    merged = list(best.values()) + orphans
+    merged.sort(key=lambda x: float(x.get("score") or 0), reverse=True)
+    return merged[: max(int(top_k), 0)]
+
+
+def _expand_neighbors_multi(hits: List[Dict[str, Any]], *, neighbor_n: int) -> List[dict]:
+    by_dir: Dict[str, List[Dict[str, Any]]] = {}
+    for h in hits:
+        d = str(h.get("_index_dir") or "")
+        by_dir.setdefault(d, []).append(h)
+    contexts: List[dict] = []
+    for d, group in by_dir.items():
+        if not d:
+            continue
+        store = _get_store(Path(d))
+        src_idx = _get_source_index(Path(d))
+        contexts.extend(
+            build_neighbor_contexts(
+                metas=store._meta,  # noqa: SLF001
+                hits=group,
+                neighbor_n=int(neighbor_n),
+                _source_index=src_idx,
+            )
+        )
+    return contexts
+
+
 def rag_search_tool(
     *,
     query: str,
     top_k: int = 5,
     index_dir: Optional[str] = None,
+    category: Optional[Union[str, Sequence[str]]] = None,
     embedding_model: str = "intfloat/multilingual-e5-small",
     device: Optional[str] = _RAG_DEVICE,
     multi_route: bool = False,
@@ -226,9 +329,22 @@ def rag_search_tool(
     cfg0 = default_config(repo_root)
     resolved_emb = resolve_embedding_model_id(embedding_model, repo_root)
     resolved_rr = resolve_rerank_model_id(rerank_model, repo_root)
+
+    cat_dirs = resolve_category_index_dirs(repo_root=repo_root, category=category)
+    # Explicit index_dir wins over category when both provided without category dirs
+    if cat_dirs:
+        search_targets: List[tuple[Optional[str], Path]] = []
+        # recover category id from dir name
+        for d in cat_dirs:
+            search_targets.append((d.name, d))
+        primary_index = cat_dirs[0]
+    else:
+        primary_index = Path(index_dir) if index_dir else cfg0.index_dir
+        search_targets = [(None, primary_index)]
+
     cfg = RagConfig(
         raw_dir=cfg0.raw_dir,
-        index_dir=Path(index_dir) if index_dir else cfg0.index_dir,
+        index_dir=primary_index,
         embedding_model=resolved_emb,
         chunk_words=cfg0.chunk_words,
         chunk_overlap_words=cfg0.chunk_overlap_words,
@@ -238,46 +354,29 @@ def rag_search_tool(
     retrieve_k = int(top_k)
     if rerank:
         retrieve_k = max(retrieve_k, int(rerank_candidates))
+    # When merging multiple category stores, over-fetch per store then merge
+    per_store_k = retrieve_k if len(search_targets) == 1 else max(retrieve_k, int(top_k))
 
-    if not multi_route:
-        st = _get_store(cfg.index_dir)
-        em = _get_embedder(cfg.embedding_model, device)
-        q_emb = _embed_query_cached(em, query, cfg.embedding_model)
-        raw_hits = st.search(q_emb, top_k=retrieve_k)
-        hits = [
-            {
-                "score": float(score),
-                "source_path": meta.get("source_path"),
-                "chunk_index": meta.get("chunk_index"),
-                "n_words": meta.get("n_words"),
-                "text": meta.get("text"),
-                "chunk_id": meta.get("chunk_id"),
-            }
-            for meta, score in raw_hits
-        ]
-    else:
-        mr = _build_cached_multiroute(
-            index_dir=cfg.index_dir,
-            embedding_model=cfg.embedding_model,
-            device=device,
-            rewrite=rewrite,
-            rewrite_base_url=rewrite_base_url,
-            rewrite_api_key=rewrite_api_key,
-            rewrite_model=rewrite_model,
-            rewrite_max_out=int(rewrite_max_out),
-            rewrite_timeout_s=float(rewrite_timeout_s),
+    hits: List[Dict[str, Any]] = []
+    for cat_id, idir in search_targets:
+        hits.extend(
+            _retrieve_from_index(
+                index_dir=idir,
+                query=query,
+                retrieve_k=per_store_k,
+                embedding_model=cfg.embedding_model,
+                device=device,
+                multi_route=multi_route,
+                rewrite=rewrite,
+                rewrite_base_url=rewrite_base_url,
+                rewrite_api_key=rewrite_api_key,
+                rewrite_model=rewrite_model,
+                rewrite_max_out=int(rewrite_max_out),
+                rewrite_timeout_s=float(rewrite_timeout_s),
+                category=cat_id,
+            )
         )
-        hits = [
-            {
-                "score": float(h.score),
-                "source_path": h.meta.get("source_path"),
-                "chunk_index": h.meta.get("chunk_index"),
-                "n_words": h.meta.get("n_words"),
-                "text": h.meta.get("text"),
-                "chunk_id": h.meta.get("chunk_id"),
-            }
-            for h in mr.retrieve(query, top_k=retrieve_k)
-        ]
+    hits = _merge_hits_by_score(hits, top_k=retrieve_k)
 
     _rerank_skip_thr = float(os.getenv("RAG_RERANK_SKIP_THRESHOLD", "0.85"))
     dense_top_score = hits[0].get("score", 0.0) if hits else 0.0
@@ -317,23 +416,22 @@ def rag_search_tool(
         topn = int(rerank_keep_topn or 0)
         if topn > 0 and len(hits) > topn:
             hits = hits[:topn]
+    else:
+        hits = hits[: int(top_k)]
 
     contexts: List[dict] = []
     if int(expand_neighbors) > 0 and hits:
-        store = _get_store(cfg.index_dir)
-        src_idx = _get_source_index(cfg.index_dir)
-        contexts = build_neighbor_contexts(
-            metas=store._meta,  # noqa: SLF001
-            hits=hits,
-            neighbor_n=int(expand_neighbors),
-            _source_index=src_idx,
-        )
+        contexts = _expand_neighbors_multi(hits, neighbor_n=int(expand_neighbors))
 
     def _clip(s: str) -> str:
         s = (s or "").strip()
         if per_text_max_chars > 0 and len(s) > per_text_max_chars:
             return s[:per_text_max_chars] + "\n...(truncated)..."
         return s
+
+    # Strip internal field before return
+    for h in hits:
+        h.pop("_index_dir", None)
 
     if not include_hits_text:
         for h in hits:
@@ -362,6 +460,7 @@ def rag_search_tool(
             "rerank": bool(rerank),
             "expand_neighbors": int(expand_neighbors),
             "index_dir": str(cfg.index_dir),
+            "category": list(category) if isinstance(category, (list, tuple)) else category,
             "embedding_model": cfg.embedding_model,
         },
         "hits": hits,

@@ -15,7 +15,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ...llm.llm_client import AsyncOpenAIClient, extract_text, get_shared_async_client
 from ...llm.llm_client_stream import AsyncOpenAIStreamClient, get_shared_async_stream_client
 from ...tools.tool_registry import ToolRegistry, get_registry
-from ..plan_and_solve import build_solve_prompt
+from ..plan_and_solve import build_solve_prompt, is_concrete_vet_case
 from .critic import CriticResult, review
 from .experts import EXPERTS, run_expert
 from .router import RouterConfig, RouterDecision, route
@@ -34,6 +34,9 @@ _BLOCK_FALLBACK_TEXT = (
     "强烈建议尽快联系或前往专业兽医进行线下评估与处理。\n\n"
     "**免责声明**：以上内容仅供健康管理参考，不能替代执业兽医的诊断与治疗。"
 )
+
+# 兽医具体病例终答往往更长（病例整理 + 问题列表 + 方案）
+_VET_CONCRETE_CASE_MAX_TOKENS = 1500
 
 
 @dataclass
@@ -67,31 +70,39 @@ class MoEOrchestrator:
         self.config = config or OrchestratorConfig()
 
     # ------------------------------------------------------------------ stages
-    def _resolve_species(self):
-        # Resolve (species_en, species_zh) for the request-scoped animal; (None, None) if unknown.
+    def _resolve_species(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        # Resolve (species_en, species_zh, breed) for the request-scoped animal.
         animal_id = self.config.animal_id or get_request_animal_id()
         if not animal_id:
-            return None, None
+            return None, None, None
         profile = fetch_animal_profile(animal_id)
         if not profile:
-            return None, None
-        return (profile.get("species") or None), species_label(profile)
+            return None, None, None
+        breed = profile.get("breed")
+        breed_s = str(breed).strip() if breed else None
+        return (profile.get("species") or None), species_label(profile), (breed_s or None)
+
+    def _aggregator_max_tokens(self, query: str) -> int:
+        if self.config.user_role == "veterinarian" and is_concrete_vet_case(query):
+            return max(int(self.config.max_tokens), _VET_CONCRETE_CASE_MAX_TOKENS)
+        return int(self.config.max_tokens)
 
     async def _route(self, query: str, recorder: Optional[MoETrace]) -> RouterDecision:
-        _, species_zh = self._resolve_species()
+        _, species_zh, breed = self._resolve_species()
         return await route(
             query=query,
             user_role=self.config.user_role,
             llm=self.llm,
             config=self.config.router,
             species_zh=species_zh,
+            breed=breed,
             recorder=recorder,
         )
 
     async def _run_experts(
         self, query: str, decision: RouterDecision, recorder: Optional[MoETrace]
     ) -> List[Dict[str, Any]]:
-        species_en, species_zh = self._resolve_species()
+        species_en, species_zh, breed = self._resolve_species()
         tasks = []
         for key in decision.selected_experts:
             expert = EXPERTS.get(key)
@@ -109,6 +120,7 @@ class MoEOrchestrator:
                     device=self.config.device,
                     species_en=species_en,
                     species_zh=species_zh,
+                    breed=breed,
                     recorder=recorder,
                 )
             )
@@ -129,6 +141,7 @@ class MoEOrchestrator:
             expert_opinions=opinions,
             emergency=emergency,
             llm=self.llm,
+            user_role=self.config.user_role,
             recorder=recorder,
         )
 
@@ -143,15 +156,39 @@ class MoEOrchestrator:
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> List[Dict[str, str]]:
         base = build_solve_prompt(user_role=self.config.user_role, has_web_search=False, query=query)
+        concrete = self.config.user_role == "veterinarian" and is_concrete_vet_case(query)
+        if concrete:
+            structure_line = (
+                "- 当前用户意图为『整理病例』或『对病例做完整诊断』：按 "
+                "**病例整理**（基本信息/主诉/现病史/既往史） / **问题列表** / "
+                "**检查与治疗方案**（先紧急处理，再检查，再治疗） / **风险提示** "
+                "顺序分节（加粗文字，不用 Markdown 标题），面向医生；"
+                "用语简明，只用常规病历字段，不要写信号类口号标签；"
+                "**问题列表**条目必须是已明确的症状/异常指标（呕吐、腹泻、CRP升高等），"
+                "疾病名只放在各条下的鉴别诊断中，勿把「胰腺炎」等病名当问题标题；\n"
+            )
+        else:
+            structure_line = (
+                "- 按用户实际问题组织答复，用如下常用结构即可（加粗文字，不用 Markdown 标题）："
+                "**结论** / **依据** / **风险提示** / **建议行动** / **何时必须就医**；"
+                "不要仅因叙述中含品种/症状就强行输出病例整理与 POMR 问题列表；\n"
+            )
         agg = (
             "\n\n**多专家融合规范**\n"
             "下面是多位兽医专家针对该问题给出的加权意见（weight 越高越重要）。请你作为融合器：\n"
             "- 按权重与各专家自评置信度综合，形成一致、连贯的最终答复；\n"
             "- 显式标注专家间的冲突点（若有），不要简单拼接；\n"
-            "- 用如下结构分节（加粗文字，不用 Markdown 标题）：**结论** / **依据** / **风险提示** / **建议行动** / **何时必须就医**；\n"
+            f"{structure_line}"
+            "- 若专家意见含物种/品种特异风险（如短吻犬运动与热耐受、品种相关泌尿风险等），必须在终答中保留并突出；\n"
         )
         if decision.emergency:
-            agg += "- 当前疑似急症：务必把『立即就医』放在最前并加粗强调。\n"
+            if concrete:
+                agg += (
+                    "- 当前疑似急症：在 **检查与治疗方案** 内的 **紧急处理** 子段写清立即处置，"
+                    "不要另起文首大标题抢戏。\n"
+                )
+            else:
+                agg += "- 当前疑似急症：务必把『立即就医』放在最前并加粗强调。\n"
         if critic.constraints:
             agg += "\n**审核专家（Critic）下达的硬性约束，必须全部满足：**\n"
             agg += "\n".join(f"- {c}" for c in critic.constraints)
@@ -164,6 +201,7 @@ class MoEOrchestrator:
             "router": {"weights": decision.weights, "emergency": decision.emergency},
             "expert_opinions": opinions,
             "critic_verdict": critic.verdict,
+            "concrete_vet_case": concrete,
         }
         parts: List[str] = []
         if conversation_history:
@@ -263,13 +301,14 @@ class MoEOrchestrator:
             query=query, opinions=opinions, critic=critic, decision=decision,
             system_context=system_context, conversation_history=conversation_history,
         )
+        max_tokens = self._aggregator_max_tokens(query)
         collected: List[str] = []
         t0 = time.perf_counter()
         try:
             async for piece in self.stream_llm.chat_stream(
                 messages=messages,
                 temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
+                max_tokens=max_tokens,
             ):
                 collected.append(piece)
                 yield _event(content=piece, status="streaming")
@@ -284,7 +323,7 @@ class MoEOrchestrator:
                 messages=messages,
                 output=final_answer,
                 latency_ms=latency,
-                meta={"streamed": True},
+                meta={"streamed": True, "max_tokens": max_tokens},
             )
             recorder.final_answer = final_answer
             recorder.finalize()
@@ -321,11 +360,12 @@ class MoEOrchestrator:
             query=query, opinions=opinions, critic=critic, decision=decision,
             system_context=system_context, conversation_history=conversation_history,
         )
+        max_tokens = self._aggregator_max_tokens(query)
         t0 = time.perf_counter()
         resp = await self.llm.chat(
             messages=messages,
             temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
+            max_tokens=max_tokens,
         )
         latency = (time.perf_counter() - t0) * 1000.0
         final_answer = extract_text(resp)
@@ -337,7 +377,7 @@ class MoEOrchestrator:
                 output=final_answer,
                 latency_ms=latency,
                 usage=extract_usage(resp),
-                meta={"streamed": False},
+                meta={"streamed": False, "max_tokens": max_tokens},
             )
             recorder.final_answer = final_answer
             recorder.finalize()

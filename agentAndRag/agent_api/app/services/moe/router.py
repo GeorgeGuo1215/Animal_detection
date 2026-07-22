@@ -78,7 +78,12 @@ def _softmax(scores: Dict[str, float], temp: float) -> Dict[str, float]:
     return {k: exps[i] / s for i, k in enumerate(keys)}
 
 
-def _build_router_messages(query: str, user_role: str, species_zh: Optional[str] = None) -> List[Dict[str, str]]:
+def _build_router_messages(
+    query: str,
+    user_role: str,
+    species_zh: Optional[str] = None,
+    breed: Optional[str] = None,
+) -> List[Dict[str, str]]:
     expert_desc = "\n".join(f"- {k} ({c.name_zh})" for k, c in EXPERTS.items())
     sys = (
         "你是宠物健康多专家系统的路由器。给定用户问题，为每位专家打 0~10 的相关性分数"
@@ -96,6 +101,8 @@ def _build_router_messages(query: str, user_role: str, species_zh: Optional[str]
     payload = {"user_question": query, "user_role": user_role}
     if species_zh:
         payload["species"] = species_zh
+    if breed:
+        payload["breed"] = breed
     user = json.dumps(payload, ensure_ascii=False)
     return [
         {"role": "system", "content": sys},
@@ -110,6 +117,7 @@ async def route(
     llm: AsyncOpenAIClient,
     config: Optional[RouterConfig] = None,
     species_zh: Optional[str] = None,
+    breed: Optional[str] = None,
     recorder: Optional[MoETrace] = None,
 ) -> RouterDecision:
     cfg = config or RouterConfig()
@@ -117,7 +125,7 @@ async def route(
 
     emergency_rule = bool(_EMERGENCY_RE.search(query or ""))
 
-    messages = _build_router_messages(query, user_role, species_zh)
+    messages = _build_router_messages(query, user_role, species_zh, breed)
     scores: Dict[str, float] = {k: 0.0 for k in expert_keys}
     emergency_llm = False
     reason = ""

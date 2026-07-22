@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,10 @@ class RagSearchRequest(BaseModel):
     query: str
     top_k: int = 5
     index_dir: Optional[str] = None
+    category: Optional[Union[str, List[str]]] = Field(
+        default=None,
+        description="Restrict retrieval to one or more secondary knowledge categories (e.g. pharmacy.papich).",
+    )
     embedding_model: str = "intfloat/multilingual-e5-small"
     device: Optional[str] = None
 

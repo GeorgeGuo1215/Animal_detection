@@ -12,6 +12,12 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return v if v not in (None, "") else default
 
 
+def _httpx_trust_env() -> bool:
+    """When HTTPX_TRUST_ENV=0, ignore system/env proxies (useful if local proxy is down)."""
+    v = (os.getenv("HTTPX_TRUST_ENV") or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
 class OpenAICompatClient:
     """
     Minimal OpenAI-compatible client.
@@ -55,7 +61,7 @@ class OpenAICompatClient:
         if response_format:
             payload["response_format"] = response_format
 
-        with httpx.Client(timeout=self.timeout_s) as client:
+        with httpx.Client(timeout=self.timeout_s, trust_env=_httpx_trust_env()) as client:
             r = client.post(url, headers=headers, json=payload)
             r.raise_for_status()
             return r.json()
@@ -77,6 +83,7 @@ class AsyncOpenAIClient:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10, read=120, write=10, pool=30),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            trust_env=_httpx_trust_env(),
         )
 
     async def chat(

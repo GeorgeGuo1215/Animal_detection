@@ -28,6 +28,19 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                     "query": {"type": "string"},
                     "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 50},
                     "index_dir": {"type": ["string", "null"], "default": None},
+                    "category": {
+                        "description": (
+                            "Optional knowledge subcategory id(s) to restrict retrieval "
+                            "(e.g. 'pharmacy.papich' or ['clinical.internal_medicine','diagnostics.differential']). "
+                            "Supports prefix wildcards like 'clinical.*'. Omit to search the full index."
+                        ),
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "null"},
+                        ],
+                        "default": None,
+                    },
                     "embedding_model": {"type": "string", "default": "intfloat/multilingual-e5-small"},
                     "device": {"type": ["string", "null"], "default": _DEFAULT_DEVICE,
                                "description": "Inference device (auto-set from AGENT_WARMUP_DEVICE)"},

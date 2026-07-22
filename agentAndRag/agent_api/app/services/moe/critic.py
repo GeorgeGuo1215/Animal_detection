@@ -21,12 +21,18 @@ from .trace import MoETrace, extract_usage
 _CRITIC_SYS = (
     "你是宠物健康智能体的『边界审核专家』，是医疗安全的最后守门人。"
     "你将审核多位专家给出的意见草案，从以下维度把关：\n"
-    "1) 责任边界：是否越界做确定性诊断或替代线下就医（应降级为建议并提示就医）；\n"
+    "1) 责任边界：是否用『确诊为…』等绝对措辞替代线下检查，或劝阻就医；\n"
     "2) 事实一致性：结论是否有检索依据支撑、是否疑似幻觉；\n"
     "3) 用药安全：剂量/禁忌/物种特异性毒性（犬猫差异）是否存在危险；\n"
     "4) 数据一致性：建议之间是否相互矛盾；\n"
     "5) 合规与免责：是否需要补充免责声明与紧急情形指引。\n\n"
-    "判定规则：存在危险用药、误导性确定诊断等硬性安全问题 → verdict=block；"
+    "重要区分：\n"
+    "- 用户（尤其 veterinarian）若明确要求『做出诊断/鉴别诊断/病例整理』，"
+    "专家给出『高度怀疑 / 鉴别诊断排序 / 优先排除尿道阻塞』并强调立即就医，属于正常临床工作流，"
+    "**不得**仅因出现诊断相关表述就 block；最多用 revise 要求改成鉴别诊断措辞并补免责/急诊指引。\n"
+    "- block 仅用于硬性红线：危险用药剂量、明确鼓励自行用药替代就医、"
+    "或在无任何就医提示下给出绝对确诊并误导宠主。\n\n"
+    "判定规则：硬性安全红线 → verdict=block；"
     "仅需补免责/降确定性/补充就医提示等可修补问题 → verdict=revise；"
     "草案安全 → verdict=pass。\n"
     "你必须只输出严格 JSON（无额外文字、无代码块），结构：\n"
@@ -57,6 +63,7 @@ async def review(
     expert_opinions: List[Dict[str, Any]],
     emergency: bool,
     llm: AsyncOpenAIClient,
+    user_role: str = "pet_owner",
     recorder: Optional[MoETrace] = None,
 ) -> CriticResult:
     opinions_brief = [
@@ -70,7 +77,12 @@ async def review(
         for o in expert_opinions
     ]
     user_payload = json.dumps(
-        {"user_question": query, "emergency": emergency, "expert_opinions": opinions_brief},
+        {
+            "user_question": query,
+            "user_role": user_role,
+            "emergency": emergency,
+            "expert_opinions": opinions_brief,
+        },
         ensure_ascii=False,
     )
     messages = [

@@ -1,8 +1,8 @@
 """MoE 下游专家委员会：人设、授权工具子集与单专家会诊。
 
-P1 约束：4 个专家共享现有 RAG 索引（无分库/物种元数据过滤），物种安全用人设
-prompt 强约束；每个专家一次 rag.search（自有查询）+ 一次结构化意见 LLM 调用，
-并行执行。专家工具子集复用 registry 的 allowed_tools 机制，便于后续接入各自 MCP。
+每位专家绑定二级知识库类别（rag_categories），调用 rag.search 时强制注入 category，
+避免共享全量库时被无关书目干扰。物种安全用人设 prompt 强约束；每个专家自有
+rag 查询 + 结构化意见 LLM 调用，并行执行。
 """
 from __future__ import annotations
 
@@ -19,7 +19,17 @@ from .trace import MoETrace, extract_usage
 
 
 # 每个专家最多执行的工具步数（含保底 rag.search），控制并行专家场景下的总调用量。
-MAX_EXPERT_TOOL_STEPS = 3
+MAX_EXPERT_TOOL_STEPS = 4
+
+# 是否给每个专家暴露 registry 中「全部可用工具」（排除管理类）。
+# True：每个专家的 planner 都能看到 rag/sql/vitals/web_search/nutritional_planner 等
+#       全部已注册工具，最大化功能覆盖（各 ExpertConfig.allowed_tools 退化为“偏好提示”，
+#       不再作为硬门控）；未注册的工具（如未配置 TAVILY 时的 web_search）自然不会出现。
+# False：回退到各专家静态 allowed_tools 子集。
+EXPOSE_ALL_EXPERT_TOOLS = True
+
+# 管理/重活类工具：即使全量暴露也不交给专家 planner（避免误触发重建索引等）。
+_ADMIN_TOOLS = frozenset({"rag.reindex", "debug.echo"})
 
 
 @dataclass(frozen=True)
@@ -29,11 +39,53 @@ class ExpertConfig:
     persona: str
     allowed_tools: List[str] = field(default_factory=list)
     rag_query_hint: str = ""
+    # Secondary knowledge categories for rag.search (exact ids or prefix.* wildcards).
+    rag_categories: List[str] = field(default_factory=list)
+
+
+_CLINICAL_RAG_CATEGORIES = [
+    "basic.anatomy",
+    "basic.terminology",
+    "clinical.*",
+    "diagnostics.*",
+    "clinical_skills.*",
+    "integrative.general",
+    "anesthesia.default",
+    "immunology.default",
+    "reproduction.default",
+    "infectious.placeholder",
+    "exotic.default",
+    "zoonosis.toxoplasmosis",
+]
+
+_NUTRITION_RAG_CATEGORIES = [
+    "nutrition.placeholder",
+    "equine.nutrition",
+    "integrative.general",
+]
+
+_PHARMACY_RAG_CATEGORIES = [
+    "pharmacy.*",
+    "basic.pharmacology_fundamentals",
+    "anesthesia.default",
+]
+
+_BEHAVIOR_RAG_CATEGORIES = [
+    "behavior.*",
+]
 
 
 _SPECIES_GUARD = (
     "严格遵守物种安全：犬、猫的生理与药理差异巨大，禁止把某一物种的方案直接用于另一物种；"
     "若用户未说明物种，需提示该差异并按通用/谨慎口径作答。"
+)
+
+_SPECIES_BREED_GUARD = (
+    "物种/品种特异化保障：结合用户叙述与注入的 species/breed（若有），提炼该个体相关的特异风险与注意事项，"
+    "写入 risks 与 conclusion，禁止套用『泛犬/泛猫』方案而忽略品种差异。"
+    "示例：短吻犬（斗牛/巴哥等）需强调运动强度、热耐受、呼吸道与麻醉风险；"
+    "英短等品种在泌尿/结石倾向上需结合主诉谨慎提示。"
+    "若用户文本已点名品种但 payload 无 breed，仍须从问题中识别并特异化作答。"
 )
 
 _OUTPUT_CONTRACT = (
@@ -64,6 +116,7 @@ EXPERTS: Dict[str, ExpertConfig] = {
             "mcp.web_search.web_search",
         ],
         rag_query_hint="clinical signs differential diagnosis treatment",
+        rag_categories=list(_CLINICAL_RAG_CATEGORIES),
     ),
     "nutrition": ExpertConfig(
         key="nutrition",
@@ -81,6 +134,7 @@ EXPERTS: Dict[str, ExpertConfig] = {
             "mcp.web_search.web_search",
         ],
         rag_query_hint="nutrition diet calorie requirement feeding",
+        rag_categories=list(_NUTRITION_RAG_CATEGORIES),
     ),
     "pharmacy": ExpertConfig(
         key="pharmacy",
@@ -92,6 +146,7 @@ EXPERTS: Dict[str, ExpertConfig] = {
         ),
         allowed_tools=["rag.search", "mcp.web_search.web_search"],
         rag_query_hint="drug dosage contraindication toxicity interaction",
+        rag_categories=list(_PHARMACY_RAG_CATEGORIES),
     ),
     "behavior": ExpertConfig(
         key="behavior",
@@ -102,6 +157,7 @@ EXPERTS: Dict[str, ExpertConfig] = {
         ),
         allowed_tools=["rag.search", "mcp.web_search.web_search"],
         rag_query_hint="animal behavior anxiety stress training",
+        rag_categories=list(_BEHAVIOR_RAG_CATEGORIES),
     ),
 }
 
@@ -143,16 +199,23 @@ async def run_expert(
     device: Optional[str] = None,
     species_en: Optional[str] = None,
     species_zh: Optional[str] = None,
+    breed: Optional[str] = None,
     recorder: Optional[MoETrace] = None,
 ) -> Dict[str, Any]:
     """单专家会诊：在授权工具子集内自主规划并调用工具（含 SQL/vitals/MCP），
     再据全部工具结果产出结构化意见。返回意见 dict。"""
 
     species_term = f" {species_en}" if species_en else ""
-    rag_query = f"{query}{species_term} {expert.rag_query_hint}".strip()
+    breed_term = f" {breed}" if breed else ""
+    rag_query = f"{query}{species_term}{breed_term} {expert.rag_query_hint}".strip()
 
-    # 1a) 本专家可见工具子集：无 animal_id 时隐藏需绑定宠物的工具（sql.search / vitals.summary）
-    visible_tools = list(expert.allowed_tools)
+    # 1a) 本专家可见工具集：默认暴露 registry 全部可用工具（排除管理类），
+    #     以最大化功能覆盖；否则退回该专家静态 allowed_tools 子集。
+    #     无 animal_id 时再隐藏需绑定宠物的工具（sql.search / vitals.summary）。
+    if EXPOSE_ALL_EXPERT_TOOLS:
+        visible_tools = [t.name for t in registry.list_tools() if t.name not in _ADMIN_TOOLS]
+    else:
+        visible_tools = list(expert.allowed_tools)
     if not get_request_animal_id():
         visible_tools = [t for t in visible_tools if t not in ANIMAL_REQUIRED_TOOLS]
 
@@ -167,18 +230,18 @@ async def run_expert(
             stage=f"expert:{expert.key}:plan",
         )
         # 仅保留属于本专家授权子集的工具步：planner 偶尔会建议越权/虚构工具，
-        # 若直接交给 execute_tool_steps 会因 "Tool not allowed" 抛错并连带丢掉保底 rag。
+        # 若直接交给 execute_tool_steps 会因 "Tool not allowed" 抛错。
         _visible = set(visible_tools)
         tool_steps = [
             s for s in steps
             if isinstance(s, dict) and s.get("type") == "tool" and str(s.get("tool_name") or "") in _visible
         ]
-    except Exception:  # noqa: BLE001 - 规划失败时降级为仅保底 rag.search
+    except Exception:  # noqa: BLE001 - 规划失败时降级为空，走保底 rag
         tool_steps = []
 
-    # 1c) 保底 rag.search：确保 RAG 始终运行，并为 rag 步补默认查询/设备
-    if not any(s.get("tool_name") == "rag.search" for s in tool_steps):
-        tool_steps.insert(0, {"type": "tool", "tool_name": "rag.search", "arguments": {}})
+    # 1c) 仅当 plan 为空时保底 rag.search；规划器已选其他工具时不再强插，避免挤占步数。
+    if not tool_steps:
+        tool_steps = [{"type": "tool", "tool_name": "rag.search", "arguments": {}}]
     for s in tool_steps:
         if s.get("tool_name") == "rag.search":
             args = s.get("arguments")
@@ -188,9 +251,12 @@ async def run_expert(
             args.setdefault("top_k", rag_top_k)
             if device is not None:
                 args.setdefault("device", device)
+            # Force expert-scoped knowledge categories (do not trust planner).
+            if expert.rag_categories:
+                args["category"] = list(expert.rag_categories)
             s["arguments"] = args
 
-    # 1d) 执行（封顶步数，rag 保底步在最前）
+    # 1d) 执行（封顶步数）
     tool_steps = tool_steps[:MAX_EXPERT_TOOL_STEPS]
     try:
         tool_results = await execute_tool_steps(
@@ -240,10 +306,12 @@ async def run_expert(
     evidence = "\n\n".join(p for p in evidence_parts if p) or "（无检索结果）"
 
     # 2) 结构化意见 LLM 调用
-    sys_prompt = f"{expert.persona}\n{_SPECIES_GUARD}\n\n{_OUTPUT_CONTRACT}"
+    sys_prompt = f"{expert.persona}\n{_SPECIES_GUARD}\n{_SPECIES_BREED_GUARD}\n\n{_OUTPUT_CONTRACT}"
     expert_payload = {"user_question": query, "retrieved_evidence": evidence}
     if species_zh:
         expert_payload["species"] = species_zh
+    if breed:
+        expert_payload["breed"] = breed
     user_payload = json.dumps(expert_payload, ensure_ascii=False)
     messages = [
         {"role": "system", "content": sys_prompt},

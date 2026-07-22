@@ -15,6 +15,11 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return v if v not in (None, "") else default
 
 
+def _httpx_trust_env() -> bool:
+    v = (os.getenv("HTTPX_TRUST_ENV") or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
 class OpenAIStreamClient:
     """
     OpenAI-compatible streaming client.
@@ -60,7 +65,7 @@ class OpenAIStreamClient:
             "stream": True,
         }
 
-        with httpx.Client(timeout=self.timeout_s) as client:
+        with httpx.Client(timeout=self.timeout_s, trust_env=_httpx_trust_env()) as client:
             with client.stream("POST", url, headers=headers, json=payload) as response:
                 response.raise_for_status() # 如果 status_code 是 4xx 或 5xx，抛出 HTTPStatusError
                 for line in response.iter_lines():
@@ -111,6 +116,7 @@ class AsyncOpenAIStreamClient:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10, read=120, write=10, pool=30),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            trust_env=_httpx_trust_env(),
         )
 
     async def chat_stream(

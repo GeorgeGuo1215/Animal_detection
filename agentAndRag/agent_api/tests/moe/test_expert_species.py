@@ -1,4 +1,4 @@
-"""Verify run_expert injects species into the RAG query and the expert payload.
+"""Verify run_expert injects species/breed into the RAG query and the expert payload.
 
 Uses fake registry + fake LLM (no DB / no network). ASCII sentinels only.
 Run: pytest tests/moe/test_expert_species.py
@@ -10,12 +10,20 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from app.services.moe.experts import EXPERTS, run_expert
+from app.services.moe.experts import EXPERTS, run_expert, _SPECIES_BREED_GUARD
 
 
 class FakeRegistry:
     def __init__(self):
         self.calls = []
+
+    def list_tools(self):
+        from app.tools.tool_registry import ToolSpec
+
+        async def _rag(**kwargs):
+            return {"hits": []}
+
+        return [ToolSpec(name="rag.search", description="fake", input_schema={"type": "object"}, handler=_rag)]
 
     async def call(self, name, args):
         self.calls.append((name, args))
@@ -27,9 +35,18 @@ class FakeLLM:
 
     def __init__(self):
         self.last_messages = None
+        self.plan_tools = ["rag.search"]
 
     async def chat(self, messages=None, **kwargs):
         self.last_messages = messages
+        sys_text = (messages or [{}])[0].get("content") or ""
+        if "规划器" in sys_text:
+            steps = [
+                {"type": "tool", "tool_name": t, "arguments": {}, "note": "t"}
+                for t in self.plan_tools
+            ]
+            steps.append({"type": "final", "note": "done"})
+            return {"choices": [{"message": {"content": json.dumps({"steps": steps})}}]}
         content = json.dumps(
             {"conclusion": "ok", "evidence": [], "risks": [], "confidence": 0.5}
         )
@@ -38,6 +55,10 @@ class FakeLLM:
 
 def _user_content(messages):
     return [m for m in messages if m["role"] == "user"][0]["content"]
+
+
+def _system_content(messages):
+    return [m for m in messages if m["role"] == "system"][0]["content"]
 
 
 def test_run_expert_injects_species():
@@ -64,6 +85,29 @@ def test_run_expert_injects_species():
     assert res["expert"] == "clinical"
 
 
+def test_run_expert_injects_breed_and_guard():
+    reg, llm = FakeRegistry(), FakeLLM()
+    asyncio.run(
+        run_expert(
+            expert=EXPERTS["clinical"],
+            query="bulldog exercise plan",
+            weight=0.8,
+            registry=reg,
+            llm=llm,
+            species_en="dog",
+            species_zh="犬（狗）",
+            breed="French Bulldog",
+            recorder=None,
+        )
+    )
+    assert "French Bulldog" in reg.calls[0][1]["query"]
+    sys_content = _system_content(llm.last_messages)
+    assert "物种/品种特异化" in sys_content or _SPECIES_BREED_GUARD[:12] in sys_content
+    user_content = _user_content(llm.last_messages)
+    assert "French Bulldog" in user_content
+    assert "breed" in user_content
+
+
 def test_run_expert_without_species():
     reg, llm = FakeRegistry(), FakeLLM()
     asyncio.run(
@@ -78,3 +122,41 @@ def test_run_expert_without_species():
     )
     user_content = _user_content(llm.last_messages)
     assert "species" not in user_content
+
+
+def test_run_expert_no_forced_rag_when_other_tools_planned():
+    """Planner chose only web_search → must NOT force-insert rag.search."""
+    from app.tools.tool_registry import ToolSpec
+
+    class Reg(FakeRegistry):
+        def list_tools(self):
+            async def _web(**kwargs):
+                return {"results": []}
+
+            async def _rag(**kwargs):
+                return {"hits": []}
+
+            return [
+                ToolSpec(name="rag.search", description="fake", input_schema={"type": "object"}, handler=_rag),
+                ToolSpec(
+                    name="mcp.web_search.web_search",
+                    description="fake web",
+                    input_schema={"type": "object"},
+                    handler=_web,
+                ),
+            ]
+
+    reg, llm = Reg(), FakeLLM()
+    llm.plan_tools = ["mcp.web_search.web_search"]
+    res = asyncio.run(
+        run_expert(
+            expert=EXPERTS["clinical"],
+            query="latest feline UTI guideline",
+            weight=0.8,
+            registry=reg,
+            llm=llm,
+            recorder=None,
+        )
+    )
+    assert "mcp.web_search.web_search" in res["tools_used"]
+    assert "rag.search" not in res["tools_used"]
